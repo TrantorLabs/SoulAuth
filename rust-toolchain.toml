@@ -1,0 +1,16 @@
+# 工具链钉死，本地与 CI 用同一个。
+#
+# 不钉的话，CI 的 `dtolnay/rust-toolchain@stable` 每次拉当天的 stable，而开发机上
+# 是另一个版本。本仓库对本 crate 开了 `-D warnings`，于是新版 clippy 多出的任意
+# 一条 lint 都能让 CI 红，而在本地怎么跑都是绿的 —— 这类「本机绿、CI 红」在本仓
+# 已经发生过一次（schema.sql 缺 OPTION IMPORT，SurrealDB 3.0 能导、3.2 不能）。
+#
+# 这里的版本就是整套闸门实际跑过的那一个：check / clippy / 170 单测 /
+# 54 conformance / 353 integration / walkthrough 全部在 1.91.1 上验过。
+#
+# 升级步骤：改这一个数字，跑完整闸门，绿了再提交。不要为了让某条新 lint 过去
+# 而单独调整；新 lint 由 ci.yml 里那个不阻断的 `lint on latest stable` 步骤负责
+# 提前暴露。
+[toolchain]
+channel = "1.91.1"
+components = ["clippy", "rustfmt"]

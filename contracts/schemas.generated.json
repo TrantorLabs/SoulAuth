@@ -1,0 +1,3036 @@
+{
+  "handlers": {
+    "actors_add_credential": {
+      "query": null,
+      "request": "RegisterRequest",
+      "response": "CredentialResponse",
+      "status_only": false
+    },
+    "actors_authenticate": {
+      "query": null,
+      "request": "AuthenticateRequest",
+      "response": "AuthenticateResponse",
+      "status_only": false
+    },
+    "actors_challenge": {
+      "query": null,
+      "request": "ChallengeRequest",
+      "response": "IssuedChallenge",
+      "status_only": false
+    },
+    "actors_get_actor": {
+      "query": null,
+      "request": null,
+      "response": "ActorResponse",
+      "status_only": false
+    },
+    "actors_list_actors": {
+      "query": null,
+      "request": null,
+      "response": "[]ActorResponse",
+      "status_only": false
+    },
+    "actors_list_credentials": {
+      "query": null,
+      "request": null,
+      "response": "[]CredentialResponse",
+      "status_only": false
+    },
+    "actors_me": {
+      "query": null,
+      "request": null,
+      "response": "ActorResponse",
+      "status_only": false
+    },
+    "actors_register": {
+      "query": null,
+      "request": "RegisterRequest",
+      "response": "RegisterResponse",
+      "status_only": false
+    },
+    "actors_revoke_credential": {
+      "query": null,
+      "request": null,
+      "response": "Value",
+      "status_only": false
+    },
+    "audit_active_user_rate": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_check_database_health": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_count_actions_since": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_count_failed_actions_since": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_generate_authentication_analysis": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_generate_security_report": {
+      "query": "AuditQuery",
+      "request": null,
+      "response": "SecurityReport",
+      "status_only": false
+    },
+    "audit_generate_user_behavior_analysis": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_active_sessions_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_activity_summary": {
+      "query": "AuditQuery",
+      "request": null,
+      "response": "ActivitySummary",
+      "status_only": false
+    },
+    "audit_get_audit_dashboard": {
+      "query": "AuditQuery",
+      "request": null,
+      "response": "AuditDashboard",
+      "status_only": false
+    },
+    "audit_get_failed_logins_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_locked_accounts_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_login_trends": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_memory_usage": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_pending_lockouts_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_security_events_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_security_incidents": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_security_metrics": {
+      "query": "AuditQuery",
+      "request": null,
+      "response": "SecurityMetrics",
+      "status_only": false
+    },
+    "audit_get_security_trends": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_system_health": {
+      "query": null,
+      "request": null,
+      "response": "SystemHealth",
+      "status_only": false
+    },
+    "audit_get_top_activities": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_total_activities_count": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "audit_get_total_users": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_admin_login": {
+      "query": null,
+      "request": "LoginRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_ensure_admin_console_access": {
+      "query": null,
+      "request": null,
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_ensure_not_locked_out": {
+      "query": null,
+      "request": null,
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_get_current_user": {
+      "query": null,
+      "request": null,
+      "response": "UserResponse",
+      "status_only": false
+    },
+    "auth_get_sessions": {
+      "query": null,
+      "request": null,
+      "response": "[]SessionInfo",
+      "status_only": false
+    },
+    "auth_github_callback": {
+      "query": "OAuthCallback",
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_github_login": {
+      "query": "OAuthLoginQuery",
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_google_callback": {
+      "query": "OAuthCallback",
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_google_login": {
+      "query": "OAuthLoginQuery",
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_initialize_password": {
+      "query": null,
+      "request": "InitializePasswordRequest",
+      "response": "UserResponse",
+      "status_only": false
+    },
+    "auth_is_admin_console_user": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_login": {
+      "query": null,
+      "request": "LoginRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_logout": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_logout_all": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "auth_mfa_disable": {
+      "query": null,
+      "request": "DisableMfaRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_mfa_enable": {
+      "query": null,
+      "request": "EnableTotpRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_mfa_login_verify": {
+      "query": null,
+      "request": "MfaLoginVerifyRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_mfa_setup": {
+      "query": null,
+      "request": null,
+      "response": "TotpSetupResponse",
+      "status_only": false
+    },
+    "auth_mfa_status": {
+      "query": null,
+      "request": null,
+      "response": "MfaStatusResponse",
+      "status_only": false
+    },
+    "auth_perform_login": {
+      "query": null,
+      "request": null,
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_register": {
+      "query": null,
+      "request": "CreateUserRequest",
+      "response": "AuthResponse",
+      "status_only": false
+    },
+    "auth_request_password_reset": {
+      "query": null,
+      "request": "RequestPasswordResetRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_resend_verification": {
+      "query": null,
+      "request": "RequestPasswordResetRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_reset_password": {
+      "query": null,
+      "request": "ResetPasswordRequest",
+      "response": "Value",
+      "status_only": false
+    },
+    "auth_verify_email": {
+      "query": null,
+      "request": null,
+      "response": "AuthResponse",
+      "status_only": false
+    },
+    "bootstrap_admin_exists": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "bootstrap_bootstrap_admin": {
+      "query": null,
+      "request": "BootstrapAdminRequest",
+      "response": "BootstrapAdminResponse",
+      "status_only": false
+    },
+    "oidc_authorize": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_browser_session_is_active": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_client_create_client": {
+      "query": null,
+      "request": "CreateOidcClientRequest",
+      "response": "OidcClientResponse",
+      "status_only": false
+    },
+    "oidc_client_disable_client": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": true
+    },
+    "oidc_client_get_client": {
+      "query": null,
+      "request": null,
+      "response": "OidcClientResponse",
+      "status_only": false
+    },
+    "oidc_client_list_clients": {
+      "query": "ListClientsQuery",
+      "request": null,
+      "response": "ListClientsResponse",
+      "status_only": false
+    },
+    "oidc_client_regenerate_secret": {
+      "query": null,
+      "request": null,
+      "response": "RegenerateSecretResponse",
+      "status_only": false
+    },
+    "oidc_client_update_client": {
+      "query": null,
+      "request": "CreateOidcClientRequest",
+      "response": "OidcClientResponse",
+      "status_only": false
+    },
+    "oidc_create_authorize_response": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_jwks": {
+      "query": null,
+      "request": null,
+      "response": "JwksResponse",
+      "status_only": false
+    },
+    "oidc_load_client": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_logout": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_openid_configuration": {
+      "query": null,
+      "request": null,
+      "response": "OidcConfiguration",
+      "status_only": false
+    },
+    "oidc_resolve_existing_user_id": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_token": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "oidc_userinfo": {
+      "query": null,
+      "request": null,
+      "response": "UserInfoResponse",
+      "status_only": false
+    },
+    "oidc_validate_authorize_request": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "ops_get_membership_overview": {
+      "query": null,
+      "request": null,
+      "response": "Value",
+      "status_only": false
+    },
+    "rbac_assign_permission_to_role": {
+      "query": null,
+      "request": "AssignPermissionToRoleRequest",
+      "response": null,
+      "status_only": true
+    },
+    "rbac_assign_role_to_user": {
+      "query": null,
+      "request": "AssignRoleRequest",
+      "response": null,
+      "status_only": true
+    },
+    "rbac_check_permission": {
+      "query": null,
+      "request": null,
+      "response": "PermissionCheckResponse",
+      "status_only": false
+    },
+    "rbac_check_role": {
+      "query": null,
+      "request": null,
+      "response": "RoleCheckResponse",
+      "status_only": false
+    },
+    "rbac_create_permission": {
+      "query": null,
+      "request": "CreatePermissionRequest",
+      "response": "PermissionResponse",
+      "status_only": false
+    },
+    "rbac_create_role": {
+      "query": null,
+      "request": "CreateRoleRequest",
+      "response": "RoleResponse",
+      "status_only": false
+    },
+    "rbac_delete_role": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": true
+    },
+    "rbac_get_permission": {
+      "query": null,
+      "request": null,
+      "response": "PermissionResponse",
+      "status_only": false
+    },
+    "rbac_get_role": {
+      "query": null,
+      "request": null,
+      "response": "RoleResponse",
+      "status_only": false
+    },
+    "rbac_get_role_permissions": {
+      "query": null,
+      "request": null,
+      "response": "[]String",
+      "status_only": false
+    },
+    "rbac_get_user_permissions": {
+      "query": null,
+      "request": null,
+      "response": "[]String",
+      "status_only": false
+    },
+    "rbac_get_user_roles": {
+      "query": null,
+      "request": null,
+      "response": "UserRoleResponse",
+      "status_only": false
+    },
+    "rbac_list_permissions": {
+      "query": "PaginationQuery",
+      "request": null,
+      "response": "[]PermissionResponse",
+      "status_only": false
+    },
+    "rbac_list_roles": {
+      "query": "PaginationQuery",
+      "request": null,
+      "response": "[]RoleResponse",
+      "status_only": false
+    },
+    "rbac_remove_permission_from_role": {
+      "query": null,
+      "request": "RemovePermissionFromRoleRequest",
+      "response": null,
+      "status_only": true
+    },
+    "rbac_remove_role_from_user": {
+      "query": null,
+      "request": "RemoveRoleRequest",
+      "response": null,
+      "status_only": true
+    },
+    "rbac_update_role": {
+      "query": null,
+      "request": "UpdateRoleRequest",
+      "response": "RoleResponse",
+      "status_only": false
+    },
+    "security_get_lockout_status": {
+      "query": "LockoutQuery",
+      "request": null,
+      "response": "LockoutCheckResult",
+      "status_only": false
+    },
+    "security_unlock": {
+      "query": null,
+      "request": "UnlockRequest",
+      "response": "UnlockResponse",
+      "status_only": false
+    },
+    "user_management_create_user_preferences": {
+      "query": null,
+      "request": "CreateUserPreferencesRequest",
+      "response": "UserPreferencesResponse",
+      "status_only": false
+    },
+    "user_management_create_user_profile": {
+      "query": null,
+      "request": "CreateUserProfileRequest",
+      "response": "UserProfileResponse",
+      "status_only": false
+    },
+    "user_management_get_user_activity_log": {
+      "query": "ActivityLogRequest",
+      "request": null,
+      "response": "ActivityLogResponse",
+      "status_only": false
+    },
+    "user_management_get_user_activity_log_by_id": {
+      "query": "ActivityLogRequest",
+      "request": null,
+      "response": "ActivityLogResponse",
+      "status_only": false
+    },
+    "user_management_get_user_by_id": {
+      "query": null,
+      "request": null,
+      "response": "UserResponse",
+      "status_only": false
+    },
+    "user_management_get_user_preferences": {
+      "query": null,
+      "request": null,
+      "response": "UserPreferencesResponse",
+      "status_only": false
+    },
+    "user_management_get_user_preferences_by_id": {
+      "query": null,
+      "request": null,
+      "response": "UserPreferencesResponse",
+      "status_only": false
+    },
+    "user_management_get_user_profile": {
+      "query": null,
+      "request": null,
+      "response": "UserProfileResponse",
+      "status_only": false
+    },
+    "user_management_get_user_profile_by_id": {
+      "query": null,
+      "request": null,
+      "response": "UserProfileResponse",
+      "status_only": false
+    },
+    "user_management_list_users": {
+      "query": "UserListRequest",
+      "request": null,
+      "response": "UserListResponse",
+      "status_only": false
+    },
+    "user_management_update_user_account_status": {
+      "query": null,
+      "request": "UpdateAccountStatusRequest",
+      "response": "AccountStatusResponse",
+      "status_only": false
+    },
+    "user_management_update_user_membership": {
+      "query": null,
+      "request": "UpdateMembershipRequest",
+      "response": "UserResponse",
+      "status_only": false
+    },
+    "user_management_update_user_preferences": {
+      "query": null,
+      "request": "UpdateUserPreferencesRequest",
+      "response": "UserPreferencesResponse",
+      "status_only": false
+    },
+    "user_management_update_user_profile": {
+      "query": null,
+      "request": "UpdateUserProfileRequest",
+      "response": "UserProfileResponse",
+      "status_only": false
+    }
+  },
+  "schemas": {
+    "AccountStatusResponse": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "status": {
+          "type": "object"
+        },
+        "updated_at": {
+          "type": "object"
+        },
+        "updated_by": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "status",
+        "updated_at",
+        "updated_by"
+      ],
+      "type": "object"
+    },
+    "ActivityLogRequest": {
+      "properties": {
+        "category": {
+          "type": "object"
+        },
+        "end_date": {
+          "type": "object"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "start_date": {
+          "type": "object"
+        },
+        "status": {
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "ActivityLogResponse": {
+      "properties": {
+        "activities": {
+          "items": {
+            "$ref": "#/components/schemas/UserActivityResponse"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "total_pages": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activities",
+        "total",
+        "page",
+        "limit",
+        "total_pages"
+      ],
+      "type": "object"
+    },
+    "ActivityMetric": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "percentage": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "count",
+        "percentage"
+      ],
+      "type": "object"
+    },
+    "ActivitySummary": {
+      "properties": {
+        "by_category": {
+          "items": {
+            "$ref": "#/components/schemas/CategoryMetric"
+          },
+          "type": "array"
+        },
+        "by_status": {
+          "items": {
+            "$ref": "#/components/schemas/StatusMetric"
+          },
+          "type": "array"
+        },
+        "hourly_distribution": {
+          "items": {
+            "$ref": "#/components/schemas/HourlyActivity"
+          },
+          "type": "array"
+        },
+        "period": {
+          "type": "string"
+        },
+        "top_users": {
+          "items": {
+            "$ref": "#/components/schemas/UserActivityMetric"
+          },
+          "type": "array"
+        },
+        "total_activities": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "period",
+        "total_activities",
+        "by_category",
+        "by_status",
+        "top_users",
+        "hourly_distribution"
+      ],
+      "type": "object"
+    },
+    "ActorResponse": {
+      "properties": {
+        "actor_kind": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "identity_source": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "subject_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "subject_key",
+        "actor_kind",
+        "identity_source",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "AssignPermissionToRoleRequest": {
+      "properties": {
+        "permission_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "permission_name"
+      ],
+      "type": "object"
+    },
+    "AssignRoleRequest": {
+      "properties": {
+        "role_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_name"
+      ],
+      "type": "object"
+    },
+    "AuditDashboard": {
+      "properties": {
+        "active_sessions": {
+          "type": "integer"
+        },
+        "failed_logins": {
+          "type": "integer"
+        },
+        "locked_accounts": {
+          "type": "integer"
+        },
+        "login_trends": {
+          "items": {
+            "$ref": "#/components/schemas/TimeseriesData"
+          },
+          "type": "array"
+        },
+        "period": {
+          "type": "string"
+        },
+        "security_events": {
+          "type": "integer"
+        },
+        "security_trends": {
+          "items": {
+            "$ref": "#/components/schemas/TimeseriesData"
+          },
+          "type": "array"
+        },
+        "top_activities": {
+          "items": {
+            "$ref": "#/components/schemas/ActivityMetric"
+          },
+          "type": "array"
+        },
+        "total_users": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "period",
+        "total_users",
+        "active_sessions",
+        "failed_logins",
+        "locked_accounts",
+        "security_events",
+        "top_activities",
+        "login_trends",
+        "security_trends"
+      ],
+      "type": "object"
+    },
+    "AuditQuery": {
+      "properties": {
+        "days": {
+          "type": "integer"
+        },
+        "hours": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "AuthResponse": {
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/components/schemas/UserResponse"
+        }
+      },
+      "required": [
+        "token",
+        "user"
+      ],
+      "type": "object"
+    },
+    "AuthenticateRequest": {
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "algorithm": {
+          "type": "string"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor_id",
+        "nonce",
+        "algorithm",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "AuthenticateResponse": {
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "credential_label": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        },
+        "token_type": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "token",
+        "token_type",
+        "actor_id",
+        "expires_at",
+        "credential_label"
+      ],
+      "type": "object"
+    },
+    "AuthenticationAnalysis": {
+      "properties": {
+        "failure_analysis": {
+          "items": {
+            "$ref": "#/components/schemas/FailureAnalysis"
+          },
+          "type": "array"
+        },
+        "geographic_distribution": {
+          "items": {
+            "$ref": "#/components/schemas/GeographicMetric"
+          },
+          "type": "array"
+        },
+        "login_patterns": {
+          "items": {
+            "$ref": "#/components/schemas/LoginPattern"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "login_patterns",
+        "failure_analysis",
+        "geographic_distribution"
+      ],
+      "type": "object"
+    },
+    "AuthenticationStats": {
+      "properties": {
+        "failed_logins": {
+          "type": "integer"
+        },
+        "oauth_logins": {
+          "type": "integer"
+        },
+        "password_resets": {
+          "type": "integer"
+        },
+        "success_rate": {
+          "type": "number"
+        },
+        "successful_logins": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "successful_logins",
+        "failed_logins",
+        "oauth_logins",
+        "password_resets",
+        "success_rate"
+      ],
+      "type": "object"
+    },
+    "BootstrapAdminRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "email",
+        "username",
+        "password"
+      ],
+      "type": "object"
+    },
+    "BootstrapAdminResponse": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "email",
+        "is_admin"
+      ],
+      "type": "object"
+    },
+    "CategoryMetric": {
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "percentage": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "category",
+        "count",
+        "percentage"
+      ],
+      "type": "object"
+    },
+    "ChallengeRequest": {
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor_id"
+      ],
+      "type": "object"
+    },
+    "CreateOidcClientRequest": {
+      "properties": {
+        "access_token_lifetime": {
+          "type": "integer"
+        },
+        "allowed_grant_types": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "allowed_response_types": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "allowed_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "client_name": {
+          "type": "string"
+        },
+        "client_type": {
+          "type": "object"
+        },
+        "id_token_lifetime": {
+          "type": "integer"
+        },
+        "post_logout_redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh_token_lifetime": {
+          "type": "integer"
+        },
+        "require_pkce": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "client_name",
+        "client_type",
+        "redirect_uris"
+      ],
+      "type": "object"
+    },
+    "CreatePermissionRequest": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "display_name",
+        "resource",
+        "action"
+      ],
+      "type": "object"
+    },
+    "CreateRoleRequest": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "display_name"
+      ],
+      "type": "object"
+    },
+    "CreateUserPreferencesRequest": {
+      "properties": {
+        "date_format": {
+          "type": "string"
+        },
+        "email_notifications": {
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string"
+        },
+        "marketing_emails": {
+          "type": "boolean"
+        },
+        "newsletter": {
+          "type": "boolean"
+        },
+        "security_emails": {
+          "type": "boolean"
+        },
+        "sms_notifications": {
+          "type": "boolean"
+        },
+        "theme": {
+          "type": "string"
+        },
+        "time_format": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CreateUserProfileRequest": {
+      "properties": {
+        "bio": {
+          "type": "string"
+        },
+        "date_of_birth": {
+          "type": "object"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "website": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CreateUserRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ],
+      "type": "object"
+    },
+    "CredentialResponse": {
+      "properties": {
+        "algorithm": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "last_used_at": {
+          "type": "integer"
+        },
+        "public_key": {
+          "type": "string"
+        },
+        "revoked_at": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "public_key",
+        "algorithm",
+        "label",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "DatabaseHealth": {
+      "properties": {
+        "connected": {
+          "type": "boolean"
+        },
+        "response_time_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "connected",
+        "response_time_ms"
+      ],
+      "type": "object"
+    },
+    "DisableMfaRequest": {
+      "properties": {
+        "totp_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "totp_code"
+      ],
+      "type": "object"
+    },
+    "EnableTotpRequest": {
+      "properties": {
+        "totp_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "totp_code"
+      ],
+      "type": "object"
+    },
+    "ExecutiveSummary": {
+      "properties": {
+        "active_users": {
+          "type": "integer"
+        },
+        "risk_level": {
+          "type": "string"
+        },
+        "security_incidents": {
+          "type": "integer"
+        },
+        "success_rate": {
+          "type": "number"
+        },
+        "total_users": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total_users",
+        "active_users",
+        "security_incidents",
+        "success_rate",
+        "risk_level"
+      ],
+      "type": "object"
+    },
+    "FailureAnalysis": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "failure_reason": {
+          "type": "string"
+        },
+        "percentage": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "failure_reason",
+        "count",
+        "percentage"
+      ],
+      "type": "object"
+    },
+    "FrequencyMetric": {
+      "properties": {
+        "frequency_range": {
+          "type": "string"
+        },
+        "percentage": {
+          "type": "number"
+        },
+        "user_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "frequency_range",
+        "user_count",
+        "percentage"
+      ],
+      "type": "object"
+    },
+    "GeographicMetric": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "country": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "country",
+        "region",
+        "count"
+      ],
+      "type": "object"
+    },
+    "HourlyActivity": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "hour": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hour",
+        "count"
+      ],
+      "type": "object"
+    },
+    "InitializePasswordRequest": {
+      "properties": {
+        "password": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "password"
+      ],
+      "type": "object"
+    },
+    "IpActivityMetric": {
+      "properties": {
+        "failed_attempts": {
+          "type": "integer"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "is_locked": {
+          "type": "boolean"
+        },
+        "last_attempt": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "ip_address",
+        "failed_attempts",
+        "is_locked",
+        "last_attempt"
+      ],
+      "type": "object"
+    },
+    "IssuedChallenge": {
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "algorithm": {
+          "type": "object"
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor_id",
+        "nonce",
+        "expires_at",
+        "payload",
+        "algorithm"
+      ],
+      "type": "object"
+    },
+    "JwkKey": {
+      "properties": {
+        "alg": {
+          "type": "string"
+        },
+        "e": {
+          "type": "string"
+        },
+        "kid": {
+          "type": "string"
+        },
+        "kty": {
+          "type": "string"
+        },
+        "n": {
+          "type": "string"
+        },
+        "use": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kty",
+        "use",
+        "alg",
+        "kid",
+        "n",
+        "e"
+      ],
+      "type": "object"
+    },
+    "JwksResponse": {
+      "properties": {
+        "keys": {
+          "items": {
+            "$ref": "#/components/schemas/JwkKey"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "type": "object"
+    },
+    "ListClientsQuery": {
+      "properties": {
+        "limit": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ListClientsResponse": {
+      "properties": {
+        "clients": {
+          "items": {
+            "$ref": "#/components/schemas/OidcClientResponse"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "clients",
+        "total",
+        "limit",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "LockoutCheckResult": {
+      "properties": {
+        "is_locked": {
+          "type": "boolean"
+        },
+        "lockout_type": {
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        },
+        "remaining_attempts": {
+          "type": "integer"
+        },
+        "remaining_lockout_seconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "is_locked",
+        "remaining_attempts",
+        "message"
+      ],
+      "type": "object"
+    },
+    "LockoutQuery": {
+      "properties": {
+        "identifier": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "scope",
+        "identifier"
+      ],
+      "type": "object"
+    },
+    "LockoutStats": {
+      "properties": {
+        "active_lockouts": {
+          "type": "integer"
+        },
+        "average_lockout_duration_minutes": {
+          "type": "number"
+        },
+        "ip_lockouts": {
+          "type": "integer"
+        },
+        "user_lockouts": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "user_lockouts",
+        "ip_lockouts",
+        "active_lockouts",
+        "average_lockout_duration_minutes"
+      ],
+      "type": "object"
+    },
+    "LoginPattern": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "pattern_type": {
+          "type": "string"
+        },
+        "trend": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern_type",
+        "count",
+        "trend"
+      ],
+      "type": "object"
+    },
+    "LoginRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ],
+      "type": "object"
+    },
+    "MemoryStats": {
+      "properties": {
+        "available_mb": {
+          "type": "number"
+        },
+        "usage_percentage": {
+          "type": "number"
+        },
+        "used_mb": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "used_mb",
+        "available_mb",
+        "usage_percentage"
+      ],
+      "type": "object"
+    },
+    "MfaLoginVerifyRequest": {
+      "properties": {
+        "admin": {
+          "type": "boolean"
+        },
+        "backup_code": {
+          "type": "string"
+        },
+        "temp_token": {
+          "type": "string"
+        },
+        "totp_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "temp_token",
+        "admin"
+      ],
+      "type": "object"
+    },
+    "MfaStatusResponse": {
+      "properties": {
+        "backup_codes_count": {
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "last_used_at": {
+          "type": "object"
+        },
+        "method": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "enabled",
+        "backup_codes_count"
+      ],
+      "type": "object"
+    },
+    "OAuthCallback": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "OAuthLoginQuery": {
+      "properties": {
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "OidcClientResponse": {
+      "properties": {
+        "access_token_lifetime": {
+          "type": "integer"
+        },
+        "allowed_grant_types": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "allowed_response_types": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "allowed_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_name": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "client_type": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "id_token_lifetime": {
+          "type": "integer"
+        },
+        "is_active": {
+          "type": "boolean"
+        },
+        "post_logout_redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh_token_lifetime": {
+          "type": "integer"
+        },
+        "require_pkce": {
+          "type": "boolean"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "client_id",
+        "client_secret",
+        "client_name",
+        "client_type",
+        "redirect_uris",
+        "post_logout_redirect_uris",
+        "allowed_scopes",
+        "allowed_grant_types",
+        "allowed_response_types",
+        "require_pkce",
+        "access_token_lifetime",
+        "refresh_token_lifetime",
+        "id_token_lifetime",
+        "is_active",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "OidcConfiguration": {
+      "properties": {
+        "authorization_endpoint": {
+          "type": "string"
+        },
+        "code_challenge_methods_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "end_session_endpoint": {
+          "type": "string"
+        },
+        "grant_types_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id_token_signing_alg_values_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_uri": {
+          "type": "string"
+        },
+        "response_types_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scopes_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subject_types_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_endpoint": {
+          "type": "string"
+        },
+        "token_endpoint_auth_methods_supported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "userinfo_endpoint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuer",
+        "authorization_endpoint",
+        "token_endpoint",
+        "userinfo_endpoint",
+        "jwks_uri",
+        "end_session_endpoint",
+        "response_types_supported",
+        "grant_types_supported",
+        "subject_types_supported",
+        "id_token_signing_alg_values_supported",
+        "scopes_supported",
+        "token_endpoint_auth_methods_supported",
+        "code_challenge_methods_supported"
+      ],
+      "type": "object"
+    },
+    "PaginationQuery": {
+      "properties": {
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "PermissionCheckResponse": {
+      "properties": {
+        "has_permission": {
+          "type": "boolean"
+        },
+        "permission": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "has_permission",
+        "user_id",
+        "permission"
+      ],
+      "type": "object"
+    },
+    "PermissionResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_system": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "display_name",
+        "resource",
+        "action",
+        "is_system",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "RegenerateSecretResponse": {
+      "properties": {
+        "client_secret": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_secret",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RegisterRequest": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "public_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "public_key",
+        "label"
+      ],
+      "type": "object"
+    },
+    "RegisterResponse": {
+      "properties": {
+        "actor": {
+          "$ref": "#/components/schemas/ActorResponse"
+        },
+        "credential": {
+          "$ref": "#/components/schemas/CredentialResponse"
+        }
+      },
+      "required": [
+        "actor",
+        "credential"
+      ],
+      "type": "object"
+    },
+    "RemovePermissionFromRoleRequest": {
+      "properties": {
+        "permission_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "permission_name"
+      ],
+      "type": "object"
+    },
+    "RemoveRoleRequest": {
+      "properties": {
+        "role_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_name"
+      ],
+      "type": "object"
+    },
+    "RequestPasswordResetRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "type": "object"
+    },
+    "ResetPasswordRequest": {
+      "properties": {
+        "new_password": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "new_password"
+      ],
+      "type": "object"
+    },
+    "RetentionMetrics": {
+      "properties": {
+        "daily_active_rate": {
+          "type": "number"
+        },
+        "monthly_active_rate": {
+          "type": "number"
+        },
+        "weekly_active_rate": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "daily_active_rate",
+        "weekly_active_rate",
+        "monthly_active_rate"
+      ],
+      "type": "object"
+    },
+    "RoleCheckResponse": {
+      "properties": {
+        "has_role": {
+          "type": "boolean"
+        },
+        "role": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "has_role",
+        "user_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "RoleResponse": {
+      "properties": {
+        "created_at": {
+          "type": "integer"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_system": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "display_name",
+        "is_system",
+        "created_at",
+        "updated_at",
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "RoleWithPermissions": {
+      "properties": {
+        "assigned_at": {
+          "type": "object"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "display_name",
+        "permissions",
+        "assigned_at"
+      ],
+      "type": "object"
+    },
+    "SecurityIncident": {
+      "properties": {
+        "affected_user": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "incident_type": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "resolved": {
+          "type": "boolean"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "incident_type",
+        "severity",
+        "ip_address",
+        "description",
+        "timestamp",
+        "resolved"
+      ],
+      "type": "object"
+    },
+    "SecurityMetrics": {
+      "properties": {
+        "authentication_stats": {
+          "$ref": "#/components/schemas/AuthenticationStats"
+        },
+        "failed_login_by_ip": {
+          "items": {
+            "$ref": "#/components/schemas/IpActivityMetric"
+          },
+          "type": "array"
+        },
+        "lockout_stats": {
+          "$ref": "#/components/schemas/LockoutStats"
+        },
+        "period": {
+          "type": "string"
+        },
+        "permission_denials": {
+          "type": "integer"
+        },
+        "rate_limit_violations": {
+          "type": "integer"
+        },
+        "suspicious_activities": {
+          "items": {
+            "$ref": "#/components/schemas/SuspiciousActivity"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "period",
+        "authentication_stats",
+        "lockout_stats",
+        "rate_limit_violations",
+        "permission_denials",
+        "failed_login_by_ip",
+        "suspicious_activities"
+      ],
+      "type": "object"
+    },
+    "SecurityRecommendation": {
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "estimated_impact": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "priority",
+        "category",
+        "title",
+        "description",
+        "estimated_impact"
+      ],
+      "type": "object"
+    },
+    "SecurityReport": {
+      "properties": {
+        "authentication_analysis": {
+          "$ref": "#/components/schemas/AuthenticationAnalysis"
+        },
+        "executive_summary": {
+          "$ref": "#/components/schemas/ExecutiveSummary"
+        },
+        "generated_at": {
+          "type": "object"
+        },
+        "period": {
+          "type": "string"
+        },
+        "recommendations": {
+          "items": {
+            "$ref": "#/components/schemas/SecurityRecommendation"
+          },
+          "type": "array"
+        },
+        "security_incidents": {
+          "items": {
+            "$ref": "#/components/schemas/SecurityIncident"
+          },
+          "type": "array"
+        },
+        "user_behavior_analysis": {
+          "$ref": "#/components/schemas/UserBehaviorAnalysis"
+        }
+      },
+      "required": [
+        "generated_at",
+        "period",
+        "executive_summary",
+        "authentication_analysis",
+        "security_incidents",
+        "user_behavior_analysis",
+        "recommendations"
+      ],
+      "type": "object"
+    },
+    "SessionInfo": {
+      "properties": {
+        "created_at": {
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "is_current": {
+          "type": "boolean"
+        },
+        "user_agent": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "created_at",
+        "user_agent",
+        "ip_address",
+        "is_current"
+      ],
+      "type": "object"
+    },
+    "StatusMetric": {
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "percentage": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "count",
+        "percentage"
+      ],
+      "type": "object"
+    },
+    "SuspiciousActivity": {
+      "properties": {
+        "activity_type": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "first_seen": {
+          "type": "object"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "last_seen": {
+          "type": "object"
+        },
+        "risk_score": {
+          "type": "integer"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ip_address",
+        "activity_type",
+        "count",
+        "risk_score",
+        "first_seen",
+        "last_seen"
+      ],
+      "type": "object"
+    },
+    "SystemHealth": {
+      "properties": {
+        "active_sessions_count": {
+          "type": "integer"
+        },
+        "database_status": {
+          "$ref": "#/components/schemas/DatabaseHealth"
+        },
+        "memory_usage": {
+          "$ref": "#/components/schemas/MemoryStats"
+        },
+        "pending_lockouts": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "object"
+        },
+        "uptime_seconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timestamp",
+        "database_status",
+        "active_sessions_count",
+        "pending_lockouts",
+        "memory_usage",
+        "uptime_seconds"
+      ],
+      "type": "object"
+    },
+    "TimeseriesData": {
+      "properties": {
+        "timestamp": {
+          "type": "object"
+        },
+        "value": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timestamp",
+        "value"
+      ],
+      "type": "object"
+    },
+    "TotpSetupResponse": {
+      "properties": {
+        "backup_codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "qr_code": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "secret",
+        "qr_code",
+        "backup_codes"
+      ],
+      "type": "object"
+    },
+    "UnlockRequest": {
+      "properties": {
+        "identifier": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "scope",
+        "identifier"
+      ],
+      "type": "object"
+    },
+    "UnlockResponse": {
+      "properties": {
+        "unlocked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unlocked"
+      ],
+      "type": "object"
+    },
+    "UpdateAccountStatusRequest": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "status": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "UpdateMembershipRequest": {
+      "properties": {
+        "membership_expiry": {
+          "type": "object"
+        },
+        "membership_level": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "membership_level"
+      ],
+      "type": "object"
+    },
+    "UpdateRoleRequest": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UpdateUserPreferencesRequest": {
+      "properties": {
+        "date_format": {
+          "type": "string"
+        },
+        "email_notifications": {
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string"
+        },
+        "marketing_emails": {
+          "type": "boolean"
+        },
+        "newsletter": {
+          "type": "boolean"
+        },
+        "security_emails": {
+          "type": "boolean"
+        },
+        "sms_notifications": {
+          "type": "boolean"
+        },
+        "theme": {
+          "type": "string"
+        },
+        "time_format": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UpdateUserProfileRequest": {
+      "properties": {
+        "bio": {
+          "type": "string"
+        },
+        "date_of_birth": {
+          "type": "object"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "website": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UserActivityMetric": {
+      "properties": {
+        "activity_count": {
+          "type": "integer"
+        },
+        "email": {
+          "type": "string"
+        },
+        "last_activity": {
+          "type": "object"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "email",
+        "activity_count",
+        "last_activity"
+      ],
+      "type": "object"
+    },
+    "UserActivityResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "category": {
+          "type": "object"
+        },
+        "details": {
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "status": {
+          "type": "object"
+        },
+        "timestamp": {
+          "type": "object"
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "action",
+        "category",
+        "ip_address",
+        "user_agent",
+        "details",
+        "status",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "UserBehaviorAnalysis": {
+      "properties": {
+        "login_frequency_distribution": {
+          "items": {
+            "$ref": "#/components/schemas/FrequencyMetric"
+          },
+          "type": "array"
+        },
+        "peak_activity_hours": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "user_retention_metrics": {
+          "$ref": "#/components/schemas/RetentionMetrics"
+        }
+      },
+      "required": [
+        "login_frequency_distribution",
+        "peak_activity_hours",
+        "user_retention_metrics"
+      ],
+      "type": "object"
+    },
+    "UserInfoResponse": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "email_verified": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "picture": {
+          "type": "string"
+        },
+        "preferred_username": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "sub": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sub"
+      ],
+      "type": "object"
+    },
+    "UserListRequest": {
+      "properties": {
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "search": {
+          "type": "string"
+        },
+        "sort_by": {
+          "type": "string"
+        },
+        "sort_order": {
+          "type": "string"
+        },
+        "status": {
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "UserListResponse": {
+      "properties": {
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "total_pages": {
+          "type": "integer"
+        },
+        "users": {
+          "items": {
+            "$ref": "#/components/schemas/UserResponse"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "users",
+        "total",
+        "page",
+        "limit",
+        "total_pages"
+      ],
+      "type": "object"
+    },
+    "UserPreferencesResponse": {
+      "properties": {
+        "created_at": {
+          "type": "object"
+        },
+        "date_format": {
+          "type": "string"
+        },
+        "email_notifications": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "marketing_emails": {
+          "type": "boolean"
+        },
+        "newsletter": {
+          "type": "boolean"
+        },
+        "security_emails": {
+          "type": "boolean"
+        },
+        "sms_notifications": {
+          "type": "boolean"
+        },
+        "theme": {
+          "type": "string"
+        },
+        "time_format": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "object"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "theme",
+        "language",
+        "email_notifications",
+        "sms_notifications",
+        "marketing_emails",
+        "security_emails",
+        "newsletter",
+        "timezone",
+        "date_format",
+        "time_format",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "UserProfileResponse": {
+      "properties": {
+        "avatar_url": {
+          "type": "string"
+        },
+        "bio": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "object"
+        },
+        "date_of_birth": {
+          "type": "object"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "first_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "object"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "website": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_id",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "UserResponse": {
+      "properties": {
+        "account_status": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "object"
+        },
+        "email": {
+          "type": "string"
+        },
+        "has_password": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "last_login_at": {
+          "type": "object"
+        },
+        "membership_expiry": {
+          "type": "object"
+        },
+        "membership_level": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "username",
+        "is_admin",
+        "verified",
+        "membership_level",
+        "created_at",
+        "has_password",
+        "account_status"
+      ],
+      "type": "object"
+    },
+    "UserRoleResponse": {
+      "properties": {
+        "roles": {
+          "items": {
+            "$ref": "#/components/schemas/RoleWithPermissions"
+          },
+          "type": "array"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "roles"
+      ],
+      "type": "object"
+    }
+  }
+}

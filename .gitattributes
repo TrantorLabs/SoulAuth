@@ -1,0 +1,42 @@
+# 行尾规范。
+#
+# 没有这份文件时，Windows 上默认的 `core.autocrlf=true` 会把检出的文件全部
+# 转成 CRLF，而本仓库有两处直接因此坏掉 —— 两处都不是「看起来乱一点」，
+# 是硬失败：
+#
+#   1. `tests/*.sh` 的 shebang 变成 `#!/usr/bin/env bash\r`，在 WSL / Git Bash
+#      里报 `/usr/bin/env: 'bash\r': No such file or directory`，一行都跑不了。
+#
+#   2. `tests/conformance.rs` 的 j1 / j2 / j3 用
+#      `registry.contains(&format!("name: {name}\n"))` 对着契约做子串断言。
+#      CRLF 之下实际字节是 `name: APP_URL\r\n`，断言必然落空 ——
+#      症状是「Runtime 读取 APP_URL，但 Configuration Registry 没有声明它」，
+#      指向一个根本不存在的契约缺口。实测发生过。
+#
+# 这两样在 Linux CI 上都是绿的，所以只有 Windows 贡献者会撞上，
+# 而他看到的报错完全不指向真正的原因。
+
+# 默认：让 git 自己判断文本/二进制，文本一律以 LF 入库。
+* text=auto eol=lf
+
+# 明确列出「内容会被程序按字节比对或被内核读取」的类型，不接受平台改写。
+*.sh    text eol=lf
+*.rs    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.sql   text eol=lf
+*.md    text eol=lf
+Dockerfile text eol=lf
+
+# 二进制，永不转换。
+*.png   binary
+*.jpg   binary
+*.ico   binary
+
+# 生成物：不参与 GitHub 的语言统计，diff 默认折叠。
+# 改它没有意义 —— schemas.generated.json 由 contracts/generate-schemas.py 写出，
+# 手改会在下一次生成时被覆盖，而 conformance j11 会先一步发现两者对不上。
+contracts/schemas.generated.json linguist-generated=true
+Cargo.lock                       linguist-generated=true

@@ -1,0 +1,54 @@
+# 需要维护者复核的路径。
+#
+# 这不是一份「重要文件」清单 —— 这个仓库里没有不重要的文件。列在这里的共同点是
+# 另一件事：**改错之后，直到真正要紧的那一刻之前都看不出来。**
+#
+# 测试能拦住绝大多数东西。拦不住的是「判据本身被改松了」「一次性的门变成可重入的」
+# 「审计还在写但已经证明不了什么」这一类 —— 它们在 CI 上一样是绿的。
+#
+# GitHub 会把最后一条匹配的规则作为准，所以顺序有意义：先写宽的，再写窄的。
+
+* @TrantorLabs/soulauth-maintainers
+
+# ── 判据本身 ─────────────────────────────────────────────────────────
+#
+# 改这个文件等于改宪法。业务代码写错了会被它拦下来；它自己被改松了，
+# 就没有第二道东西会说话。任何「顺手把断言调松一点让 CI 过」的改动都必须被看见。
+/tests/conformance.rs                @TrantorLabs/soulauth-maintainers
+/tests/integration.sh                @TrantorLabs/soulauth-maintainers
+
+# ── 一次性的门 ───────────────────────────────────────────────────────
+#
+# 第一个管理员的引导端点。它必须是一次性的、并发安全的，而且对「令牌错」与
+# 「门已关」返回逐字相同的响应 —— 否则一枚废令牌就能用来探测实例是否已初始化。
+/src/routes/bootstrap.rs             @TrantorLabs/soulauth-maintainers
+
+# ── 审计的可信度 ─────────────────────────────────────────────────────
+#
+# 哈希链与 checkpoint 签名。这里出错的表现是「审计照常在写」，
+# 只有需要拿它当证据的那天才发现它证明不了任何事。
+/src/services/audit_integrity.rs     @TrantorLabs/soulauth-maintainers
+/src/services/audit_logger.rs        @TrantorLabs/soulauth-maintainers
+
+# ── 生产闸门 ─────────────────────────────────────────────────────────
+#
+# 「什么算生产」以及「生产必须配什么」只在这一处判定。放松其中任何一条，
+# 后果都不在启动时显现：密钥缺失要等重启或轮换才爆，副本标识撞车要等到
+# 有人去查审计才发现。
+/src/config.rs                       @TrantorLabs/soulauth-maintainers
+
+# ── 对外承诺 ─────────────────────────────────────────────────────────
+#
+# 契约是消费方唯一该依赖的东西，schema 是升级路径。这两处的改动会传导到
+# 文档站的快照与所有接入方，改完还要在另一个仓库同步一次。
+/contracts/                          @TrantorLabs/soulauth-maintainers
+/schema.sql                          @TrantorLabs/soulauth-maintainers
+/initial_data.sql                    @TrantorLabs/soulauth-maintainers
+
+# ── 治理与许可 ───────────────────────────────────────────────────────
+/LICENSE                             @TrantorLabs/soulauth-maintainers
+/NOTICE                              @TrantorLabs/soulauth-maintainers
+/SECURITY.md                         @TrantorLabs/soulauth-maintainers
+/CONTRIBUTING.md                     @TrantorLabs/soulauth-maintainers
+/CONTRIBUTING.zh-CN.md               @TrantorLabs/soulauth-maintainers
+/.github/                            @TrantorLabs/soulauth-maintainers

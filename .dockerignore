@@ -1,0 +1,13 @@
+# 构建上下文只需要源码与 schema。把 target/ 传进去会让上下文膨胀到 GB 级，
+# 而且它对镜像毫无用处 —— 编译在 builder 阶段从零做。
+target/
+.git/
+.github/
+tests/
+docs/
+*.md
+!README.md
+.env
+.env.*
+!.env.example
+node_modules/

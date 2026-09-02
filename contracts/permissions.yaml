@@ -1,0 +1,203 @@
+# SoulAuth Permission Registry
+#
+# 法位：Machine Contract Authority。
+#
+# GA-07 §22 把权限的两层职责分开：
+#   Permission Meaning    → 27｜Administration（人类可读语义）
+#   Exact Permission Name → 本文件
+#
+# 这里是 exact vocabulary 的**唯一**来源。Guide、Example、Troubleshooting
+# 都不得自行创造权限名（GA-07 §50）。
+#
+# 与 Runtime 的关系由 `tests/conformance.rs::i3` 双向断言：种子里多一条
+# （授予了却零效果）或代码里多一条（永远拒绝）都会让测试变红。
+#
+# 生成依据：src/models/permission.rs（常量）+ initial_data.sql（种子）
+#           + src/routes/**（require_permission! 调用点）
+
+registry: soulauth-permissions
+version: 1
+
+# 命名空间前缀。
+#
+# 它不是装饰：一个以 soulauth: 开头的权限串，无论流经多少系统，都不会被
+# 错认成 OS 级授权（P0-DECISION-10 DEC-10-05）。这些权限只治理 SoulAuth
+# 自身的控制平面，不构成任何外部系统的 Authority Source。
+namespace: "soulauth:"
+
+permissions:
+  - name: soulauth:users.read
+    constant: USERS_READ
+    description: Read actors, profiles and preferences; read another actor's roles
+    description_zh: 读取 Actor、档案、偏好；读取他人的角色
+    status: supported
+    enforced_at:
+      - ops::get_membership_overview
+      - user_management::get_user_by_id
+      - user_management::get_user_preferences_by_id
+      - user_management::get_user_profile_by_id
+      - user_management::list_users
+      - rbac::get_user_permissions
+      - rbac::get_user_roles
+  - name: soulauth:users.write
+    constant: USERS_WRITE
+    description: Change account status and membership level
+    description_zh: 修改账号状态与会员等级
+    status: supported
+    enforced_at:
+      - user_management::update_user_account_status
+      - user_management::update_user_membership
+  - name: soulauth:roles.read
+    constant: ROLES_READ
+    description: List and read roles
+    description_zh: 列出与读取角色
+    status: supported
+    enforced_at:
+      - rbac::get_role
+      - rbac::get_role_permissions
+      - rbac::list_roles
+  - name: soulauth:roles.write
+    constant: ROLES_WRITE
+    description: Create and update roles; assign and remove roles on actors
+    description_zh: 创建、更新角色；给主体分配 / 移除角色
+    status: supported
+    enforced_at:
+      - rbac::assign_role_to_user
+      - rbac::create_role
+      - rbac::remove_role_from_user
+      - rbac::update_role
+  - name: soulauth:roles.delete
+    constant: ROLES_DELETE
+    description: Delete roles
+    description_zh: 删除角色
+    status: supported
+    enforced_at:
+      - rbac::delete_role
+  - name: soulauth:permissions.read
+    constant: PERMISSIONS_READ
+    description: List and read permissions
+    description_zh: 列出与读取权限
+    status: supported
+    enforced_at:
+      - rbac::get_permission
+      - rbac::list_permissions
+  - name: soulauth:permissions.write
+    constant: PERMISSIONS_WRITE
+    description: Create permissions; attach and detach them on roles
+    description_zh: 创建权限；给角色分配 / 移除权限
+    status: supported
+    enforced_at:
+      - rbac::assign_permission_to_role
+      - rbac::create_permission
+      - rbac::remove_permission_from_role
+  - name: soulauth:security.read
+    constant: SECURITY_READ
+    description: Read lockout state, security metrics and system health
+    description_zh: 读取锁定状态、安全指标、系统健康
+    status: supported
+    enforced_at:
+      - audit::get_security_metrics
+      - audit::get_system_health
+      - security::get_lockout_status
+  - name: soulauth:security.write
+    constant: SECURITY_WRITE
+    description: Clear account and IP lockouts
+    description_zh: 解除账号 / IP 锁定
+    status: supported
+    enforced_at:
+      - security::unlock
+  - name: soulauth:audit.read
+    constant: AUDIT_READ
+    description: Audit dashboard, activity summaries, security reports, other actors' activity
+    description_zh: 审计仪表盘、活动汇总、安全报告、他人活动
+    status: supported
+    enforced_at:
+      - audit::generate_security_report
+      - audit::get_activity_summary
+      - audit::get_audit_dashboard
+      - user_management::get_user_activity_log_by_id
+  - name: soulauth:oidc_clients.read
+    constant: OIDC_CLIENTS_READ
+    description: List and read OIDC clients
+    description_zh: 列出与读取 OIDC 客户端
+    status: supported
+    enforced_at:
+      - oidc_client::get_client
+      - oidc_client::list_clients
+  - name: soulauth:oidc_clients.write
+    constant: OIDC_CLIENTS_WRITE
+    description: Create, update and disable clients; regenerate secrets
+    description_zh: 创建、更新、停用客户端；重新生成密钥
+    status: supported
+    enforced_at:
+      - oidc_client::create_client
+      - oidc_client::disable_client
+      - oidc_client::regenerate_secret
+      - oidc_client::update_client
+
+# 内置角色。不可删除。
+#
+# 注意 auditor 只持有 audit.read，因此读不了 security-metrics 与
+# system-health —— 那两个端点由 security.read 把关。
+  - name: soulauth:actors.read
+    constant: ACTORS_READ
+    description: View registered non-human actors and their verification keys (public keys only)
+    description_zh: 查看已注册的非人主体及其验证密钥（只含公钥）
+    status: supported
+    enforced_at:
+      - actors::get_actor
+      - actors::list_actors
+      - actors::list_credentials
+  - name: soulauth:actors.write
+    constant: ACTORS_WRITE
+    description: >-
+      Register non-human actors and add or revoke their verification keys.
+      Holding it means being able to conjure an authenticable subject out of
+      nothing, so it is granted only to admin by default.
+    description_zh: >-
+      注册非人主体、增删其验证密钥。拿到它等于能凭空造出一个可认证的主体，
+      因此默认只授予 admin。
+    status: supported
+    enforced_at:
+      - actors::add_credential
+      - actors::register
+      - actors::revoke_credential
+roles:
+  - name: admin
+    permissions:
+      - soulauth:actors.read
+      - soulauth:actors.write
+      - soulauth:audit.read
+      - soulauth:oidc_clients.read
+      - soulauth:oidc_clients.write
+      - soulauth:permissions.read
+      - soulauth:permissions.write
+      - soulauth:roles.delete
+      - soulauth:roles.read
+      - soulauth:roles.write
+      - soulauth:security.read
+      - soulauth:security.write
+      - soulauth:users.read
+      - soulauth:users.write
+  - name: user
+    permissions: []   # 基线角色，不持有任何控制平面权限
+  - name: user_manager
+    permissions:
+      - soulauth:users.read
+      - soulauth:users.write
+  - name: security_manager
+    permissions:
+      - soulauth:security.read
+      - soulauth:security.write
+      - soulauth:users.read
+  - name: auditor
+    permissions:
+      - soulauth:audit.read
+
+# 管理后台准入：持有其中**任意一条**即可通过 POST /api/auth/admin/login。
+# 具体能看到什么仍由各自权限决定。
+admin_console_read_any_of:
+  - soulauth:users.read
+  - soulauth:roles.read
+  - soulauth:security.read
+  - soulauth:audit.read

@@ -1,0 +1,132 @@
+# SoulAuth 本地开发编排。
+#
+# 状态：每次推送由 CI 执行（.github/workflows/ci.yml 的 `docker` job）——
+#    起服务、健康检查、从日志取引导令牌、建第一个管理员、登录、访问受保护端点，
+#    再重启一次确认 schema-init 在已初始化的库上仍然放行。
+#
+#    这个 job 存在的理由是一条流程要求，不是形式：本仓库出过一次「部署文档
+#    照着做跑不通」的问题，此后的约定是 —— 可执行文档必须真的被执行过。
+#    这份文件最初带着「未经运行验证」的横幅躺了一段时间，因为编写它的环境
+#    没有 Docker；而 runner 有，所以它现在由 CI 顶着。
+#
+# 用法：
+#     cp .env.example .env      # 至少填 JWT_SECRET
+#     docker compose up -d
+#     curl http://localhost:8080/health
+#     docker compose logs -f soulauth      # 引导令牌打印在这里
+#
+# 它解决的是公开文档 03｜Quickstart 的这条硬要求：
+#
+#     「第一次运行不需要，也不应该要求你直接连接 SurrealDB、
+#       手工创建表或修改数据库记录。」
+#
+# 因此 schema 导入由 schema-init 这个一次性服务完成，而不是要求开发者
+# 自己装 SurrealDB CLI 再跑两条 import。
+#
+# 生产部署不要用这份文件：这里的口令是开发默认值，SurrealDB 也没有 TLS。
+# 生产路径见 DEPLOYMENT.md。
+
+name: soulauth
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    command:
+      - start
+      - --bind=0.0.0.0:8000
+      - --user=root
+      - --pass=root
+      # surrealkv:// 而不是 file: —— file: 是 SurrealDB 1.x 的写法，3.x 上
+      # 会以「Unable to load the specified datastore」直接退出。
+      - surrealkv:///data/soulauth.db
+    # 镜像以 `nonroot` 跑（配置里 User=nonroot），而 Docker 新建的具名卷挂上来
+    # 归 root:root 0755 —— 非 root 进程建不了数据文件，容器直接 exit 1。
+    #
+    # 这个坑此前一直被另一个错误盖着：datastore 写成 `file:` 时，surreal 在更早
+    # 的一步就以「Unable to load the specified datastore」退出，根本走不到写文件。
+    # 修好 scheme 之后它才浮出来。
+    user: root
+    volumes:
+      - surreal-data:/data
+    healthcheck:
+      # 用 CLI 自带的探针：这个镜像里没有 curl，也没有 shell 之外的工具。
+      test: ["CMD", "/surreal", "isready", "--endpoint", "http://127.0.0.1:8000"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # 一次性服务：把 schema 与种子数据导进去，成功后退出。
+  #
+  # 用 SurrealDB 官方镜像而不是在应用里做运行期 DDL —— 认证服务不应该拥有
+  # 改自己表结构的权限，那条边界写在 README「刻意没做的事」里。
+  # 两个一次性服务，各跑一条 surreal import 就退出。
+  #
+  # 为什么拆成两个而不是一个 shell 脚本：官方镜像是 distroless —— 没有 curl，
+  # 也**没有 /bin/sh**。此前这里写的是 entrypoint: ["/bin/sh","-c"] 加一段带
+  # set -e、管道和 for 循环的脚本，容器起不来：
+  #   exec: "/bin/sh": stat /bin/sh: no such file or directory
+  # compose 里一个服务只能跑一条命令，所以两条 import 拆成两个服务串起来。
+  #
+  # 也不再需要「先探测再导入」：schema.sql 的 262 条 DEFINE 现在全带
+  # IF NOT EXISTS，重复导入是 OK 而不是 already exists；initial_data.sql 本来
+  # 就全是 UPSERT。两者都可以无条件重跑。
+  schema-init:
+    image: surrealdb/surrealdb:v3.2.4
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    volumes:
+      - ./schema.sql:/sql/schema.sql:ro
+    command:
+      - import
+      - --endpoint=http://surrealdb:8000
+      - --user=root
+      - --pass=root
+      - --namespace=auth
+      - --database=main
+      - /sql/schema.sql
+    restart: "no"
+
+  seed-init:
+    image: surrealdb/surrealdb:v3.2.4
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./initial_data.sql:/sql/initial_data.sql:ro
+    command:
+      - import
+      - --endpoint=http://surrealdb:8000
+      - --user=root
+      - --pass=root
+      - --namespace=auth
+      - --database=main
+      - /sql/initial_data.sql
+    restart: "no"
+
+  soulauth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      seed-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里指向宿主机的默认值：容器内要走服务名。
+      DATABASE_URL: surrealdb:8000
+      DATABASE_USER: root
+      DATABASE_PASS: root
+      DATABASE_NAMESPACE: auth
+      DATABASE_NAME: main
+      BIND_ADDR: 0.0.0.0:8080
+      # 环回地址 → 不触发生产闸门，OIDC 私钥与 MFA 密钥因此不是必填。
+      # 这正是开发默认值不能用于生产的原因。
+      APP_URL: http://localhost:8080
+    ports:
+      - "8080:8080"
+
+volumes:
+  surreal-data:

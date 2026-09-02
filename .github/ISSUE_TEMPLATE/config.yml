@@ -1,0 +1,25 @@
+# `blank_issues_enabled: false` 与下面这几条一起，把「报漏洞」从公开 issue 引走。
+#
+# 只留一个 bug 模板是刻意的：模板越多，选错的人越多，而选错之后没人会回头改。
+# 功能建议与用法提问都走 Discussions —— 那里可以来回问，issue 不适合。
+blank_issues_enabled: false
+contact_links:
+  - name: 报告安全漏洞 / Report a security vulnerability
+    url: https://github.com/TrantorLabs/SoulAuth/security/advisories/new
+    about: >-
+      请勿在公开 issue 里报漏洞。用 GitHub 的私密上报，或按 SECURITY.md 邮件联系维护者。
+      Never report a vulnerability in a public issue — use private reporting, or mail the
+      maintainers as described in SECURITY.md.
+
+  - name: 提问与功能建议 / Questions and ideas
+    url: https://github.com/TrantorLabs/SoulAuth/discussions
+    about: >-
+      用法问题、接入方案、想要的能力，都在 Discussions 里聊。
+      Usage questions, integration approaches and feature ideas belong in Discussions.
+
+  - name: 文档站 / Documentation
+    url: https://soulauth.trantorlabs.sg/
+    about: >-
+      端点、配置项与部署步骤的完整说明。文档与代码不符本身就是 bug，请照 bug 模板提。
+      If the documentation and the code disagree, that is a bug — file it with the bug
+      template.

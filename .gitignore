@@ -1,0 +1,7 @@
+target
+.env
+__pycache__/
+*.pyc
+
+# `surreal sql` 会把 REPL 历史写进当前目录 —— 照文档在仓库根跑就会留下它
+history.txt

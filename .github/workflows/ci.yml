@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # 手动触发。账单或配额把 job 挡在门外时，恢复之后不必造一个空提交
+  # 才能重跑 —— 在 Actions 页面点 Run workflow 即可。
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# 注意：不要把 `-D warnings` 放进全局 RUSTFLAGS —— 那会连同依赖一起 deny，
+# 上游 crate 的任意一条警告都能让构建红掉。只对本 crate 生效即可（见 clippy 步骤）。
+
+jobs:
+  check:
+    name: check · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不指定版本：`rustup show` 会安装 rust-toolchain.toml 里钉的那一个，
+      # 连同它列出的 components。版本只有一处来源，改那个文件即可。
+      - name: Install pinned toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check
+        run: cargo check --all-targets
+
+      # `-D warnings` 只作用于本 crate。这一步比看上去重要：
+      # 本 crate 的 dead_code 不会自动报警（实测：往源文件里加一个显然无人调用的
+      # 私有 fn，rustc 一声不吭），所以"编译零警告"本身不构成整洁的证据，
+      # 需要 clippy 这道闸门顶上。
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      # 架构一致性读数。已成立的不变式随 `cargo test` 一起跑（上一步已覆盖）；
+      # 这一步单独把**尚未成立**的那些跑出来，只报告不阻断 —— 它们按定义就是红的，
+      # 拿它当门禁等于让 CI 长期红，那样很快就没人看了。
+      #
+      # 每完成一个 V2 Stage，删掉 tests/conformance.rs 里对应的 #[ignore]，
+      # 那条就转由上一步的 `cargo test` 硬性把守。
+      - name: architecture conformance (剩余工作量)
+        continue-on-error: true
+        run: cargo test --test conformance -- --ignored --test-threads=1
+
+      # 最新 stable 上的 lint 探针。只报告，不阻断。
+      #
+      # 门禁跑在钉死的版本上，否则上游发一次 clippy 就能让一个没动过的 commit
+      # 由绿变红。但完全不看新版本会让升级那天一次性堆上几十条 —— 所以在这里
+      # 提前看见，自己选时候修。
+      #
+      # 这一步变黄不是失败，是「下次升级工具链时要处理的清单」。
+      - name: lint on latest stable （只报告）
+        continue-on-error: true
+        run: |
+          rustup toolchain install stable --component clippy --profile minimal
+          echo "钉死版本: $(rustc --version)"
+          echo "最新 stable: $(rustup run stable rustc --version)"
+          rustup run stable cargo clippy --all-targets -- -D warnings
+
+  integration:
+    name: integration suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # 版本钉死，不取 latest。
+      #
+      # 不钉的话，安装脚本每天拉 latest.txt 指向的那一版，于是同一个 commit
+      # 在不同日子有不同结果 —— 而这正好发生过：schema.sql 缺 `OPTION IMPORT;`
+      # 时在 3.0 上导得进、在 3.2 上整份导入失败且一张表不留，本机全绿、
+      # CI 全红，差别只是安装那天 latest 指向哪里。
+      #
+      # 升级时改这一处，并把 tests/integration.sh 与 docker-compose.yml 一起跑过。
+      - name: Install SurrealDB
+        env:
+          SURREAL_VERSION: v3.2.4
+        run: |
+          curl -sSf https://install.surrealdb.com | sh -s -- --version "$SURREAL_VERSION"
+          echo "$HOME/.surrealdb" >> "$GITHUB_PATH"
+
+      - name: Verify SurrealDB is on PATH
+        run: surreal version
+
+      - name: Build
+        run: cargo build
+
+      # 端到端：真实 SurrealDB + 真实服务进程 + 零依赖的 SMTP / OAuth 替身。
+      # 覆盖的是单测够不到的契约级行为 —— 授权码流程、限流跨副本合账、
+      # 以及停用账号之后各条凭证是否真的一起失效。
+      - name: Integration suite
+        run: ./tests/integration.sh
+
+      # 部署文档的可执行形式。
+      #
+      # 文档站在两页上写着「这条路径由 CI 执行」并挂 `guard="deployment_walkthrough.sh"`
+      # 的徽章 —— 而这一步以前**并不存在**，脚本从没在 CI 上跑过。同期它还写死了
+      # 某台机器上的绝对 ROOT，也就是说那枚徽章指向的守卫既没运行、也运行不了。
+      #
+      # 一枚指不出真实运行的守卫的徽章，比不加徽章更糟：它看起来像有证据。
+      - name: Deployment walkthrough （部署文档的可执行形式）
+        run: ./tests/deployment_walkthrough.sh
+
+      - name: Dump service log on failure
+        if: failure()
+        run: |
+          echo "集成脚本默认在退出时清理现场；失败时用 KEEP_WORK=1 本地复跑可保留日志。"
+
+  docker:
+    name: docker compose （可执行文档）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 这个 job 存在的理由只有一个：`docker-compose.yml` 与 `Dockerfile`
+      # 曾经带着「未经运行验证」的横幅躺在仓库里 —— 编写它们的环境没有 Docker。
+      #
+      # 本仓库的规矩是「可执行的文档必须真的被执行过」，而一个没人跑通过的
+      # 部署路径比没有部署路径更糟：它看起来可用，直到有人照着做。
+      # runner 自带 Docker，那就在这里跑。
+      #
+      # 走的是 Quickstart 的完整路径：起服务 → 健康检查 → 从日志取引导令牌 →
+      # 建第一个管理员 → 登录 → 用令牌访问受保护端点。任何一步断掉都变红。
+
+      - name: 准备 .env
+        # compose 里 `env_file: - .env` 是硬要求，文件不存在时 compose 直接失败。
+        # 这里只填必填项，其余走 compose 内的 environment 覆盖。
+        run: |
+          cat > .env <<'ENV'
+          JWT_SECRET=ci-only-secret-at-least-32-characters-long
+          APP_URL=http://localhost:8080
+          SMTP_HOST=127.0.0.1
+          SMTP_FROM=noreply@example.com
+          ENV
+
+      - name: docker compose up
+        # 只等 `soulauth` 一个服务。`--wait` 对一次性服务（schema-init 导完就退出）
+        # 的处理在不同 compose 版本上不一致，而 soulauth 依赖它
+        # `service_completed_successfully` —— soulauth 起来了就说明导入成功了。
+        run: docker compose up -d --build --wait --wait-timeout 600 soulauth
+
+      - name: /health
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors \
+            http://localhost:8080/health
+
+      # 引导令牌只在启动日志里出现一次，而且是 warn 级别 ——
+      # 顺带验证了它在容器的默认日志级别下确实可见。
+      - name: 从日志取引导令牌并建管理员
+        run: |
+          set -euo pipefail
+          for i in $(seq 30); do
+            TOKEN="$(docker compose logs soulauth 2>&1 \
+              | grep -oP 'Bootstrap token for this process: \K\S+' | head -1 || true)"
+            [ -n "${TOKEN:-}" ] && break
+            sleep 2
+          done
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::启动日志里没有引导令牌"; docker compose logs soulauth | tail -40; exit 1
+          fi
+
+          curl -fsS -X POST http://localhost:8080/api/bootstrap/admin \
+            -H 'Content-Type: application/json' \
+            -d "{\"token\":\"${TOKEN}\",\"email\":\"ci@example.com\",\"username\":\"ciadmin\",\"password\":\"CorrectHorse42!\"}" \
+            | tee /tmp/bootstrap.json
+          grep -q '"is_admin":true' /tmp/bootstrap.json
+
+      - name: 登录并访问受保护端点
+        run: |
+          set -euo pipefail
+          TOK="$(curl -fsS -X POST http://localhost:8080/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","password":"CorrectHorse42!"}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+          curl -fsS http://localhost:8080/api/users -H "Authorization: Bearer $TOK" >/dev/null
+          echo "引导出的管理员可访问受保护端点"
+
+      # schema.sql 的每条 DEFINE 都带 IF NOT EXISTS、initial_data.sql 全是 UPSERT，
+      # 所以两个文件在有数据的库上重导应该是空操作。这一步就是在验证这一点：
+      # 一次性服务导完就退出了，`restart` 不会把它们带起来，必须显式再跑一遍。
+      - name: 重跑导入后数据仍然完好
+        run: |
+          set -euo pipefail
+          docker compose run --rm --no-deps schema-init
+          docker compose run --rm --no-deps seed-init
+          docker compose restart soulauth
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors \
+            http://localhost:8080/health
+          # 重导没有把已有数据冲掉：第一步引导出来的管理员仍然能登录。
+          curl -fsS -X POST http://localhost:8080/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","password":"CorrectHorse42!"}' \
+            | grep -q '"token"'
+
+      - name: 失败时导出日志
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: 收尾
+        if: always()
+        run: docker compose down -v

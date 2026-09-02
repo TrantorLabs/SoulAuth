@@ -1,0 +1,332 @@
+# SoulAuth Standards Registry
+#
+# 法位：Machine Contract Authority。
+#
+# GA-07 §24 与 §30 把六个状态严格分开，本文件只使用这套词汇：
+#
+#   implemented  Runtime 里有对应行为
+#   supported    进入正式 Public Support Contract（比 implemented 窄）
+#   tested       有针对本 Release 的 Evidence，且 Evidence Subject 明确
+#   conformant   通过对应规范的一致性测试
+#   certified    完成 Standards Organization 的正式认证流程
+#
+# 三条纪律（V3 22｜Standards & Conformance）：
+#
+#   Internal Revocation Semantics  ≠  RFC 7009 Support
+#   Internal / Online Token Lookup ≠  RFC 7662 Introspection
+#   SoulAuth issues Access Tokens  ≠  RFC 9068 Conformance
+#
+# 「内部有类似动作」不构成对某个标准端点的支持。没有实现对应 wire contract
+# 就不得在发现文档里 advertise —— 由 tests/conformance.rs::h10 静态守住。
+#
+# certified 一栏当前全部为 false，且不存在任何进行中的认证流程。
+
+registry: soulauth-standards
+version: 1
+
+specifications:
+  - id: rfc6749
+    title: The OAuth 2.0 Authorization Framework
+    role: authorization-server
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: >-
+      Authorization code grant and refresh token grant only. client credentials,
+      device code, implicit and ROPC are all unimplemented.
+    scope_zh: >-
+      仅 authorization code grant 与 refresh token grant。
+      client credentials、device code、implicit、ROPC 均未实现。
+    evidence: "tests/integration.sh (group 7: OIDC authorization code flow and sid)"
+
+  - id: openid-connect-core-1.0
+    title: OpenID Connect Core 1.0
+    role: openid-provider
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: >-
+      Authorization Code Flow. ID tokens are RS256 and always carry sid — if the
+      session reference cannot be resolved, signing is refused rather than issuing
+      an incomplete token. Implicit and hybrid flows are unimplemented.
+    scope_zh: >-
+      Authorization Code Flow。ID Token 为 RS256，含 sid（强制，取不到会话
+      引用时拒签而不是签发残缺令牌）。implicit 与 hybrid flow 未实现。
+    evidence: tests/integration.sh (ID token sid / RS256 / scope trimming assertions)
+    caveats:
+      - id: subject-stability
+        summary: >-
+          `sub` currently carries the `user` row key rather than the `actor_identity` key.
+        detail: >-
+          The durable identity root in the architecture is `actor_identity`
+          (`status: retired` exists precisely to prevent identifier reuse), but
+          the `sub` exposed on the wire does not point at it. This release
+          therefore **cannot** promise the "never reassigned" strength that OIDC
+          Core expects — it is stable only for the lifetime of the `user` row.
+          A consumer needing a subject identifier that survives account rebuilds
+          cannot get one from `sub` today. Changing it would invalidate every
+          in-flight token, so it is a migration that needs planning of its own.
+        detail_zh: >-
+          架构上持久的身份根是 `actor_identity`（`status: retired` 正是为了
+          防止标识符被重新分配），但 wire 上暴露的 `sub` 指的不是它。
+          因此本 Release **不能**承诺 OIDC Core 要求的「`sub` 永不重新分配」
+          这一强度 —— 它只在 `user` 行的生命周期内稳定。
+          消费方若需要跨账号重建仍然稳定的主体标识，当前无法从 `sub` 获得。
+          改动会让全部在途令牌失效，属于需要单独规划的迁移。
+        runtime: "src/services/oidc.rs (the sub value in id_token and userinfo)"
+
+  - id: openid-connect-discovery-1.0
+    title: OpenID Connect Discovery 1.0
+    role: openid-provider
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: >-
+      Served at the site root and under the /api/oidc/ prefix — one handler, two
+      paths, accommodating both client conventions. The document advertises only
+      what the runtime implements.
+    scope_zh: >-
+      /.well-known/openid-configuration，同时挂在 /api/oidc/ 前缀下 ——
+      同一处理器两个路径，兼容两种客户端惯例。
+      声明内容与 Runtime 一致，不 advertise 未实现的端点。
+    evidence: tests/conformance.rs::h10 + tests/integration.sh (group 1)
+
+  - id: rfc7636
+    title: "PKCE: Proof Key for Code Exchange"
+    role: authorization-server
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: >-
+      S256 only. plain is explicitly rejected — its challenge equals the verifier,
+      so anyone able to observe the authorization request obtains the verifier,
+      which is no protection at all.
+    scope_zh: >-
+      仅 S256。plain 被显式拒绝 —— 它的 challenge 等于 verifier 本身，
+      能看到授权请求的一方直接拿到 verifier，等于没有 PKCE。
+      公开客户端强制要求；缺 code_challenge_method 同样拒绝。
+    evidence: tests/integration.sh (PKCE plain rejected / missing method rejected)
+
+  - id: rfc7519
+    title: JSON Web Token
+    role: issuer
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: ID tokens and session tokens. Access tokens promise no internal structure.
+    scope_zh: ID Token 与会话令牌。Access Token 不承诺任何内部结构。
+
+  - id: rfc7517
+    title: JSON Web Key
+    role: issuer
+    implemented: true
+    supported: true
+    tested: true
+    conformant: false
+    certified: false
+    scope: /api/oidc/jwks publishes the RS256 public key for local verification by consumers.
+    scope_zh: /api/oidc/jwks 发布 RS256 公钥，供消费方本地验签。
+
+  - id: rfc6750
+    title: The OAuth 2.0 Authorization Framework - Bearer Token Usage
+    role: authorization-server
+    implemented: partial
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      Tokens travel in Authorization: Bearer (the scheme name is
+      case-insensitive). The WWW-Authenticate response header and invalid_token
+      challenge semantics are not fully implemented, so this is not claimed as
+      supported.
+    scope_zh: >-
+      令牌以 Authorization: Bearer 传递（方案名不区分大小写）。
+      但 WWW-Authenticate 响应头与 invalid_token / insufficient_scope
+      错误语义**尚未实现** —— 那是资源服务器侧的责任，SoulAuth 作为
+      授权服务器未提供这部分。因此 supported: false。
+
+  # ── 以下未实现。列出它们是因为生态里很容易被默认为存在 ──
+  # V3 30｜Project Status §12：必须特别确认那些用户容易误认为支持的能力。
+
+  - id: rfc7009
+    title: OAuth 2.0 Token Revocation
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      **There is no /revoke endpoint.** SoulAuth does revoke tokens internally —
+      on password change, on suspension, on refresh-token reuse — but that is
+      internal behaviour, not the RFC 7009 wire contract. Internal Revocation
+      Semantics is not RFC 7009 Support.
+    scope_zh: >-
+      **没有 /revoke 端点。**
+      SoulAuth 内部确实有令牌吊销语义（改密、停用、刷新令牌复用检测都会
+      吊销令牌族），但那是内部行为，不是 RFC 7009 的 wire contract。
+      Internal Revocation Semantics ≠ RFC 7009 Support。
+
+  - id: rfc7662
+    title: OAuth 2.0 Token Introspection
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      **There is no /introspect endpoint.** An access token is of course
+      inspectable server-side — it is a row in a database — but that is an
+      implementation detail, not the standardised introspection protocol.
+      Consumers should validate ID tokens locally instead.
+    scope_zh: >-
+      **没有 /introspect 端点。**
+      Access Token 在服务端确实是可查的（它是库里的一行），但那是实现细节，
+      不是标准化的 introspection 协议。
+      消费方应本地验签 ID Token，而不是期待 introspection。
+
+  - id: rfc9068
+    title: JWT Profile for OAuth 2.0 Access Tokens
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      Access tokens are currently opaque strings, not JWTs. \"SoulAuth issues
+      access tokens\" is not RFC 9068 conformance: consumers must not assume the
+      JWT profile that RFC specifies.
+    scope_zh: >-
+      Access Token 当前是不透明串，不是 JWT。
+      「SoulAuth 签发 Access Token」不等于 RFC 9068 符合 ——
+      消费方不得假设它可以被 base64 解开或本地验签。
+
+  - id: rfc8414
+    title: OAuth 2.0 Authorization Server Metadata
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      There is no /.well-known/oauth-authorization-server. The OIDC Discovery
+      document covers the metadata actually needed, but it is the OIDC document,
+      not the OAuth 2.0 metadata document.
+    scope_zh: >-
+      没有 /.well-known/oauth-authorization-server。
+      OIDC Discovery 文档覆盖了实际需要的元数据，但它是 OIDC 的规范，
+      不是 RFC 8414。
+
+  - id: rfc8705
+    title: OAuth 2.0 Mutual-TLS Client Authentication
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: Client authentication supports client_secret_post and client_secret_basic only.
+    scope_zh: 客户端认证仅支持 client_secret_post 与 client_secret_basic。
+
+  - id: rfc7523
+    title: JWT Profile for OAuth 2.0 Client Authentication and Authorization Grants
+    role: authorization-server
+    implemented: false
+    supported: false
+    tested: false
+    conformant: false
+    certified: false
+    scope: >-
+      Signed-assertion authentication for AI actors would follow this
+      specification, but it is **not implemented in this release**. V3 24 §2
+      requires credential representation, algorithm allowlist, canonicalisation
+      and replay semantics to be frozen before signed proof may be described as a
+      complete public authentication method.
+    scope_zh: >-
+      AIActor 的签名断言认证走这条规范，但**当前 Release 未实现**。
+      V3 24 §2 要求在冻结 credential representation、algorithm allowlist、
+      canonicalization、challenge/nonce、replay semantics 等全部条目之前，
+      不得把它描述为完整的公开认证方式。
+
+# 客户端认证方法（与发现文档的 token_endpoint_auth_methods_supported 一致）
+client_authentication_methods:
+  - client_secret_post
+  - client_secret_basic
+  - none
+
+# 两处同时带凭据会以 invalid_request 被拒，不会「挑一个用」——
+# 那会让「两处 secret 不一致」这种明显异常被静默接受。
+client_authentication_note: >-
+  credentials must appear in exactly one location per request
+
+# ═══════════════════════════════════════════════════════════════
+# 非外部标准的本地机制
+#
+# 下面这一条**不是** RFC，也不打算成为 RFC。列在这里是因为它出现在认证表面上，
+# 而消费方最容易犯的错就是把它当成某个既有标准（"这是 mTLS 吗？是 DPoP 吗？
+# 是 RFC 7523 的 client assertion 吗？"）。三个都不是。
+# ═══════════════════════════════════════════════════════════════
+
+local_mechanisms:
+  - id: soulauth-ai-actor-auth/v1
+    title: AIActor Challenge-Response Authentication
+    role: authorization-server
+    kind: soulauth-native          # 非外部标准
+    implemented: true
+    supported: true
+    tested: true
+    conformant: n/a                # 没有可对照的外部规范
+    certified: false
+    scope: >-
+      Non-human actors (ActorKind = ai_actor) authenticate by signing a
+      server-issued single-use challenge with Ed25519. The path does not go
+      through user or human_account: no email, no password, no MFA. The resulting
+      session token carries subject_type = agent.
+    scope_zh: >-
+      非人主体（ActorKind = ai_actor）以 Ed25519 对服务端签发的一次性挑战
+      签名来完成认证。不经过 user / human_account，没有邮箱、口令、MFA。
+      换到的会话令牌 `subject_type` 为 `agent`。
+    frozen_surface:
+      credential_representation: "Ed25519 public key, 32 raw bytes"
+      verification_key_format: "base64url-no-pad"
+      algorithm_allowlist: ["ed25519"]
+      signed_payload: "Four lines: domain / issuer / actor_id / nonce"
+      canonicalization: "Fixed order, \n-joined, no trailing newline, no JSON"
+      encoding: "payload UTF-8; key, nonce and signature all base64url-no-pad"
+      domain_separation: "soulauth-ai-actor-auth/v1 (first-line constant, versioned)"
+      challenge: "Server-issued, 32 bytes from a CSPRNG, uniquely indexed"
+      timestamp: "Server-side issued_at; the client submits no timestamp"
+      expiry: "120 seconds"
+      replay_semantics: "Nonce is single-use; consumed atomically **before** signature verification"
+      actor_binding: "The nonce is bound to one actor; actor_id enters the signed content"
+      error_contract: "Unified AuthError (see the Error schema in openapi.yaml)"
+    not_this:
+      - "Not RFC 7523 (JWT client assertion) — the proof is not a JWT"
+      - "Not RFC 8705 (mTLS) — no transport-layer client certificate is involved"
+      - "Not the OAuth 2.0 client credentials grant — it does not go through /api/oidc/token"
+      - "Not HTTP Message Signatures (RFC 9421) — the HTTP request itself is not signed"
+    limits:
+      - >-
+        An agent session reaches **only** /api/actors/me. RBAC is still keyed to
+        user rows (user_role.user_id) and has not been extended to
+        ActorIdentity. Human endpoints refuse an agent token with an explicit
+        403 rather than letting it slip through.
+      - "AI actors do not appear in OIDC flows: /authorize authenticates a browser session."
+    evidence: >-
+      src/models/ai_actor.rs (canonicalisation unit tests) +
+      src/services/ai_actor.rs (replay / cross-deployment / wrong-actor / wrong-key negative tests) +
+      tests/conformance.rs::a6 and ::j8 + tests/integration.sh (group 30)

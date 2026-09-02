@@ -1,0 +1,83 @@
+[package]
+name = "soulauth"
+version = "0.1.0"
+edition = "2021"
+# 整套闸门实际验过的版本，同时也是 rust-toolchain.toml 钉的那个。
+# 写在这里是为了让用更老工具链的人拿到一句明确的错误，而不是一堆解析失败。
+rust-version = "1.91.1"
+description = "An authentication service in Rust: accounts, credentials, sessions, and an OpenID Connect provider."
+repository = "https://github.com/TrantorLabs/SoulAuth"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["authentication", "oidc", "oauth2", "mfa", "rbac"]
+categories = ["authentication", "web-programming"]
+
+[dependencies]
+# Web 框架
+axum = { version = "0.6", features = ["headers", "ws"] }
+tower-http = { version = "0.4", features = ["cors"] }
+tower = { version = "0.4", features = ["util", "timeout", "load-shed", "limit"] }
+tokio = { version = "1.28", features = ["full"] }
+
+# 数据库
+reqwest = { version = "0.13", features = ["json"] }
+base64 = "0.21"
+surrealdb = { version = "3.0.0", features = ["protocol-http"] }
+surrealdb-types = "3.0.0"
+
+# 认证相关
+jsonwebtoken = "8.3"
+argon2 = "0.5"
+# 5.x 把 HttpRequest/HttpResponse 换成了 http crate 的类型，并改成 typestate 构造。
+# 升上来的收益不只是公告：4.4 钉住 reqwest 0.11，进而钉住 hyper 0.14 / h2 0.3 /
+# ring 0.16 / rustls-pemfile 1.0 一整套旧栈，而依赖树里已经有 reqwest 0.13 了。
+oauth2 = { version = "5.0", default-features = false, features = ["reqwest", "native-tls"] }
+totp-rs = { version = "5.0", features = ["qr", "serde"] }
+qrcode = "0.12"
+base32 = "0.4"
+rand = "0.8"
+# OIDC ID Token 的 RS256 签名密钥（生成 / 解析 PEM、导出 JWKS 的 n 与 e）
+rsa = "0.9"
+
+# AIActor 认证证明的验签。只用 verifying 一侧 —— SoulAuth 从不持有 Agent 私钥。
+ed25519-dalek = "2.2"
+
+# 序列化/反序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 错误处理
+thiserror = "1.0"
+anyhow = "1.0"
+
+# 日志和配置
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# 工具库
+uuid = { version = "1.3", features = ["v4", "serde"] }
+validator = { version = "0.16", features = ["derive"] }
+async-trait = "0.1"
+# dotenvy 是 dotenv 的维护分支 —— 后者已停止维护（RUSTSEC-2021-0141），API 相同。
+dotenvy = "0.15"
+
+# 加密和哈希
+sha2 = "0.10"
+# MFA 的 TOTP 密钥需要可逆加密后落库
+chacha20poly1305 = "0.10"
+
+# URL 编码
+urlencoding = "2.1"
+serde_urlencoded = "0.7"
+
+# 邮件发送
+# 0.11 的默认 features 已覆盖所需（builder / smtp-transport / native-tls / pool / hostname）。
+# 从 0.10 升上来同时带走 RUSTSEC-2026-0141（该公告只影响 boring-tls 后端，本项目未启用，
+# 但 0.10 已不再收修复）。
+lettre = "0.11"
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,249 @@
+# SoulAuth Configuration Registry
+#
+# 法位：Machine Contract Authority。
+#
+# GA-07 §21 双向约束：文档写了但 Runtime 不存在 → BLOCK；Runtime 存在且会
+# 实质改变 Supported Public Behavior 但注册表不声明 → Contract Drift。
+#
+# 唯一配置来源是**进程环境变量**（启动时读工作目录下的 .env）。
+# 当前 Release 不支持配置文件、远程配置或运行期重载。
+#
+# 生成依据：src/config.rs + src/main.rs（RUST_LOG 直读）
+
+registry: soulauth-configuration
+version: 1
+
+sources:
+  - environment            # 唯一来源
+reload: none               # 变更需重启进程
+
+groups:
+  - id: required
+    note: "Required. Missing any one of these and the process exits at startup, naming it."
+    note_zh: "必填。缺任一项进程在启动时退出并指名道姓。"
+    keys:
+      - name: JWT_SECRET
+        required: true
+        description: "Signing key for session tokens. At least 32 characters."
+        description_zh: "会话令牌签名密钥，至少 32 字符。"
+      - name: APP_URL
+        required: true
+        description: "The public address, **not** the listen address. Determines the OIDC issuer, the link prefix in outgoing mail, whether session cookies carry Secure, and whether the production gate applies."
+        description_zh: "公开地址，**不是**监听地址。决定 OIDC issuer、外发邮件链接前缀、会话 cookie 是否带 Secure，以及是否触发生产闸门。"
+      - name: SMTP_HOST
+        required: true
+        description: "Required even with email verification disabled — password reset sends mail."
+        description_zh: "即使关闭邮箱验证也必填 —— 密码重置要发信。"
+      - name: SMTP_FROM
+        required: true
+        description: "Sender address."
+        description_zh: "发件人地址。"
+  - id: production_gate
+    note: "**Mandatory** once APP_URL is not a loopback address. Both defaults would silently destroy already-issued credentials, so the process refuses to start instead."
+    note_zh: "APP_URL 非环回地址时**强制**。两个默认值都会悄悄摧毁已签发的凭证，所以宁可拒绝启动。"
+    keys:
+      - name: OIDC_RSA_PRIVATE_KEY_PATH
+        required: conditional
+        default: ""
+        description: "Path to the RS256 signing key. One of this or _PEM is required when APP_URL is not loopback."
+        description_zh: "RS256 签名密钥路径。APP_URL 非环回时与 _PEM 二选一必填。"
+      - name: OIDC_RSA_PRIVATE_KEY_PEM
+        required: conditional
+        default: ""
+        description: "Same key, inline PEM (\\n is unescaped). Without it every restart generates a new key: previously issued ID tokens all fail verification, and replicas do not accept each other's."
+        description_zh: "同上，内联 PEM（\\\\n 会被还原）。不配则每次启动换一把新密钥，此前签发的 ID Token 全部验不过，副本之间也互不认账。"
+      - name: SOULAUTH_INSTANCE_ID
+        required: false
+        default: "BIND_ADDR"
+        description: "Identifies this replica's audit hash chain. Each replica writes its own chain; two replicas sharing an id collide on the unique index and the later one's audit events are rejected. Required once APP_URL is not loopback — the default only distinguishes processes on one host."
+        description_zh: "标识本副本的审计哈希链。每个副本各写一条链；两个副本共用同一个标识会撞唯一索引，后者的审计事件写不进去。APP_URL 非环回时必填 —— 默认值只能区分同一台机器上的多个进程。"
+      - name: AUDIT_INTEGRITY_KEY
+        required: false
+        default: "none"
+        description: "Ed25519 seed (base64, 32 bytes) that signs audit checkpoints. Required once APP_URL is not loopback. Without it no checkpoint is signed, and a hash chain alone can be recomputed by anyone with database write access."
+        description_zh: "签名审计 checkpoint 的 Ed25519 种子（base64，32 字节）。APP_URL 非环回时必填。没有它就没有 checkpoint 被签出来，而只有哈希链挡不住拥有数据库写权限的人整段重算。"
+      - name: MFA_SECRET_ENCRYPTION_KEY
+        required: conditional
+        default: ""
+        description: "Encryption key for TOTP secrets. Required when APP_URL is not loopback. Without it the key derives from JWT_SECRET — rotating JWT_SECRET then makes every stored TOTP secret undecryptable."
+        description_zh: "TOTP 密钥的加密密钥。APP_URL 非环回时必填。不配则从 JWT_SECRET 派生 —— 轮换 JWT_SECRET 会让所有已存 TOTP 密钥解不开。"
+  - id: service
+    keys:
+      - name: BIND_ADDR
+        required: false
+        default: "0.0.0.0:8080"
+        description: "Listen address."
+        description_zh: "监听地址。"
+      - name: JWT_EXPIRATION
+        required: false
+        default: "86400"
+        description: "Lifetime of sessions and access tokens, in seconds."
+        description_zh: "会话与 access token 寿命（秒）。"
+      - name: PASSWORD_MIN_LENGTH
+        required: false
+        default: "12"
+        description: "Minimum password length. The policy additionally requires three of four character classes."
+        description_zh: "密码最小长度。策略另要求四类字符中的三类。"
+      - name: AUTH_SESSION_CACHE_TTL_SECONDS
+        required: false
+        default: "5"
+        description: "Session-resolution cache, in seconds. 0 means every request hits the database. It bounds the staleness window only for revocations that did **not** go through this instance."
+        description_zh: "会话校验缓存（秒）。0 = 每个请求都回库。只约束**不经过 SoulAuth** 的吊销的陈旧窗口。"
+      - name: CORS_ALLOWED_ORIGINS
+        required: false
+        default: ""
+        description: "Comma-separated. Empty allows only APP_URL itself. Wildcards are not accepted."
+        description_zh: "逗号分隔。留空只允许 APP_URL 自身。"
+      - name: TRUST_PROXY_HEADERS
+        required: false
+        default: "false"
+        description: "Set true only when genuinely behind a controlled reverse proxy. With it on while SoulAuth is directly reachable, a client can forge X-Forwarded-For and bypass IP rate limiting and lockout."
+        description_zh: "只有确实在受控反向代理之后才置 true。SoulAuth 可被直连时置 true，等于让客户端伪造 X-Forwarded-For 绕开 IP 限流与锁定。"
+  - id: database
+    keys:
+      - name: DATABASE_URL
+        required: false
+        default: "127.0.0.1:8000"
+        description: "Prefix with https:// for TLS. Plaintext to a non-loopback address logs a warning at startup."
+        description_zh: "加 https:// 前缀走 TLS。明文指向非环回地址会在启动时告警。"
+      - name: DATABASE_USER
+        required: false
+        default: "root"
+        description: "Production should use a dedicated account scoped to the namespace and database, not root."
+        description_zh: "生产上应使用限定在 ns/db 内的专用账号。"
+      - name: DATABASE_PASS
+        required: false
+        default: "root"
+      - name: DATABASE_NAMESPACE
+        required: false
+        default: "auth"
+        description: "Must match the target the schema was imported into."
+        description_zh: "必须与 schema 导入目标一致。"
+      - name: DATABASE_NAME
+        required: false
+        default: "main"
+        description: "Must match the target the schema was imported into."
+        description_zh: "必须与 schema 导入目标一致。"
+      - name: DATABASE_CONNECTION_TIMEOUT
+        required: false
+        default: "30"
+        description: "Seconds."
+        description_zh: "秒。"
+  - id: lockout
+    note: "All three numeric settings reject 0."
+    note_zh: "三个数值项都拒绝 0。"
+    keys:
+      - name: LOCKOUT_MAX_ATTEMPTS
+        required: false
+        default: "5"
+        description: "Failures before lockout. Must be ≥ 1."
+        description_zh: "锁定前的失败次数。必须 ≥1。"
+      - name: LOCKOUT_DURATION_MINUTES
+        required: false
+        default: "15"
+        description: "Lockout duration. Must be ≥ 1."
+        description_zh: "锁定时长。必须 ≥1。"
+      - name: LOCKOUT_RESET_WINDOW_MINUTES
+        required: false
+        default: "60"
+        description: "How long without a new failure before the counter resets."
+        description_zh: "多久没有新失败就清零计数。"
+      - name: LOCKOUT_USER_ENABLED
+        required: false
+        default: "true"
+        description: "Per-account dimension. Turning it off loses protection against **distributed** attacks on one account."
+        description_zh: "账号维度。关掉会失去对**分布式**攻击单账号的防护。"
+      - name: LOCKOUT_IP_ENABLED
+        required: false
+        default: "true"
+        description: "Per-IP dimension. Turning it off loses protection against **credential stuffing**."
+        description_zh: "IP 维度。关掉会失去对**撞库**的防护。"
+  - id: bootstrap
+    keys:
+      - name: SOULAUTH_BOOTSTRAP_TOKEN
+        required: false
+        default: ""
+        description: "Bootstrap token for the first administrator. Unset = generated randomly and printed to the log; set to a value = that value is used; set to the **empty string** = the path is disabled. Once an administrator exists the endpoint refuses permanently."
+        description_zh: "首个管理员的引导令牌。不设置=随机生成并打印到日志；设为具体值=用它；设为**空串**=关闭这条路径。系统里一旦存在管理员，端点永久拒绝。"
+  - id: email
+    keys:
+      - name: SMTP_PORT
+        required: false
+        default: "587"
+      - name: SMTP_USERNAME
+        required: false
+        default: ""
+      - name: SMTP_PASSWORD
+        required: false
+        default: ""
+      - name: SMTP_INSECURE
+        required: false
+        default: "false"
+        description: "true uses plaintext SMTP. Local sinks only."
+        description_zh: "true 走明文 SMTP，仅用于本地 sink。"
+      - name: EMAIL_VERIFICATION_ENABLED
+        required: false
+        default: "false"
+      - name: LOGIN_PAGE_URL
+        required: false
+        default: "{APP_URL}/login"
+        description: "Where /api/oidc/authorize sends a user who is not logged in."
+        description_zh: "/api/oidc/authorize 把未登录用户送去哪。"
+      - name: VERIFY_EMAIL_PAGE_URL
+        required: false
+        default: "derived from APP_URL"
+        description: "Landing page for verification links."
+        description_zh: "验证链接落点。"
+      - name: RESET_PASSWORD_PAGE_URL
+        required: false
+        default: "derived from APP_URL"
+        description: "Landing page for password reset links. The token is appended as a path segment."
+        description_zh: "密码重置链接落点。令牌以路径段的形式追加在后面。"
+  - id: federation
+    note: "All optional. With no provider configured, the corresponding endpoints return 501."
+    note_zh: "全部可选。一个 provider 都不配时，对应端点返回 501。"
+    keys:
+      - name: GOOGLE_CLIENT_ID
+        required: false
+        default: ""
+      - name: GOOGLE_CLIENT_SECRET
+        required: false
+        default: ""
+      - name: GITHUB_CLIENT_ID
+        required: false
+        default: ""
+      - name: GITHUB_CLIENT_SECRET
+        required: false
+        default: ""
+      - name: OAUTH_REDIRECT_URL
+        required: false
+        default: ""
+        description: "Required once any provider is configured."
+        description_zh: "配了任一 provider 就必填。"
+      - name: GOOGLE_OAUTH_BASE_URL
+        required: false
+        default: ""
+        description: "Override for the endpoint base URL."
+        description_zh: "端点根地址覆盖。"
+      - name: GITHUB_OAUTH_BASE_URL
+        required: false
+        default: ""
+        description: "For GitHub Enterprise. Plaintext is permitted only for loopback addresses."
+        description_zh: "供 GitHub Enterprise。明文只允许指向环回地址。"
+  - id: outbound_proxy
+    keys:
+      - name: PROXY_ENABLED
+        required: false
+        default: "false"
+      - name: PROXY_URL
+        required: false
+        default: ""
+        description: "**Affects OAuth HTTP requests only** — SMTP uses raw TCP and ignores this setting."
+        description_zh: "**只影响 OAuth 的 HTTP 请求** —— SMTP 走裸 TCP，不认这个设置。"
+  - id: observability
+    keys:
+      - name: RUST_LOG
+        required: false
+        default: "soulauth=debug,tower_http=info"
+        description: "Standard tracing-subscriber EnvFilter syntax. Read directly by main.rs, not through Config."
+        description_zh: "标准 tracing-subscriber EnvFilter 语法。由 main.rs 直接读取，不经 Config。"

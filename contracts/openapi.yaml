@@ -1,0 +1,4453 @@
+# SoulAuth Published OpenAPI Contract
+#
+# 法位：Machine Contract Authority。
+#
+# GA-07 §17-19 与 §50：Human Reference 与 Guide 都不得自行创造 Endpoint、
+# Field、Config Key、Permission、Wire Enum 或 Token Representation。
+# 这里是它们的**唯一**来源。
+#
+# 生成依据：src/main.rs 的 axum 路由表 + src/routes/**。
+# 由 tests/conformance.rs::j4 断言与 Runtime 一致 —— 手工增删端点会让它变红。
+#
+# 当前范围：路径、方法、认证要求、所需权限、**Error Envelope**。
+#
+# 成功响应的 schema 仍未冻结（23 §3-4：Serialization Contract 必须由工程侧
+# 先冻结，不能由契约文件反向发明），因此这里不声明 requestBody 与 2xx schema。
+#
+# Error Envelope 现在可以声明了：全站错误已收口成同一形状，由
+# tests/conformance.rs::g3（码是稳定字面量）与 ::j6（没有第二种形状）守住。
+openapi: 3.1.0
+info:
+  title: SoulAuth
+  version: "0.1.0"
+  description: >-
+    Actor-native identity and authentication infrastructure.
+    Endpoint surface only; payload schemas are not yet frozen.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: "{APP_URL}"
+    description: >-
+      The public address, set by APP_URL. It is also the OIDC issuer — the two
+      must match character for character.
+    variables:
+      APP_URL:
+        default: http://localhost:8080
+
+components:
+  # `Error` 与 `OAuthError` 手写：它们带着「为什么是这个形状」的说明，
+  # 而那不是能从类型推导出来的东西。
+  #
+  # 其余全部 schema 由 `contracts/generate-schemas.py` 从 Rust 结构体生成。
+  # 手写它们必然漂移，而漂移的 schema 与准确的 schema 看起来一模一样 ——
+  # 消费方按它构造请求，直到 422 才发现字段名不对。
+  # 由 tests/conformance.rs::j11 断言与结构体一致。
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      - message
+      additionalProperties: true
+      description: 'The single error envelope used across the whole API. `error` is a **stable machine-readable
+        code** — branch on it. `message` is prose: its wording may improve at any time and must not be
+        used for decisions. Individual errors carry documented additional fields.'
+      properties:
+        error:
+          type: string
+          description: Stable error code, snake_case.
+          enum:
+          - internal_error
+          - invalid_credentials
+          - email_not_verified
+          - invalid_token
+          - user_not_found
+          - email_exists
+          - username_exists
+          - oauth_error
+          - password_already_set
+          - invalid_user_id
+          - not_found
+          - validation_error
+          - permission_denied
+          - insufficient_permissions
+          - missing_permission
+          - account_suspended
+          - account_inactive
+          - account_deleted
+          - account_locked
+          - rate_limit_exceeded
+          - forbidden
+          - bad_request
+          - not_configured
+          - unauthorized
+          - service_unavailable
+        message:
+          type: string
+          description: Human-readable explanation. Not part of the contract.
+        required_permission:
+          type: string
+          description: Carried by `missing_permission` only — which permission is missing.
+        locked_until_seconds:
+          type: integer
+          description: Carried by `account_locked` only — seconds until the lock clears.
+    OAuthError:
+      type: object
+      required:
+      - error
+      description: Used by the OIDC protocol endpoints **only** (/api/oidc/token and friends). The shape
+        is mandated by RFC 6749 §5.2 and cannot be unified with the Error envelope above.
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
+    AccountStatusResponse:
+      properties:
+        reason:
+          type: string
+        status:
+          type: object
+        updated_at:
+          type: object
+        updated_by:
+          type: string
+        user_id:
+          type: string
+      required:
+      - user_id
+      - status
+      - updated_at
+      - updated_by
+      type: object
+    ActivityLogRequest:
+      properties:
+        category:
+          type: object
+        end_date:
+          type: object
+        limit:
+          type: integer
+        page:
+          type: integer
+        start_date:
+          type: object
+        status:
+          type: object
+      type: object
+    ActivityLogResponse:
+      properties:
+        activities:
+          items:
+            $ref: '#/components/schemas/UserActivityResponse'
+          type: array
+        limit:
+          type: integer
+        page:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+      required:
+      - activities
+      - total
+      - page
+      - limit
+      - total_pages
+      type: object
+    ActivityMetric:
+      properties:
+        action:
+          type: string
+        count:
+          type: integer
+        percentage:
+          type: number
+      required:
+      - action
+      - count
+      - percentage
+      type: object
+    ActivitySummary:
+      properties:
+        by_category:
+          items:
+            $ref: '#/components/schemas/CategoryMetric'
+          type: array
+        by_status:
+          items:
+            $ref: '#/components/schemas/StatusMetric'
+          type: array
+        hourly_distribution:
+          items:
+            $ref: '#/components/schemas/HourlyActivity'
+          type: array
+        period:
+          type: string
+        top_users:
+          items:
+            $ref: '#/components/schemas/UserActivityMetric'
+          type: array
+        total_activities:
+          type: integer
+      required:
+      - period
+      - total_activities
+      - by_category
+      - by_status
+      - top_users
+      - hourly_distribution
+      type: object
+    ActorResponse:
+      properties:
+        actor_kind:
+          type: string
+        created_at:
+          type: integer
+        id:
+          type: string
+        identity_source:
+          type: string
+        status:
+          type: string
+        subject_key:
+          type: string
+      required:
+      - id
+      - subject_key
+      - actor_kind
+      - identity_source
+      - status
+      - created_at
+      type: object
+    AssignPermissionToRoleRequest:
+      properties:
+        permission_name:
+          type: string
+      required:
+      - permission_name
+      type: object
+    AssignRoleRequest:
+      properties:
+        role_name:
+          type: string
+      required:
+      - role_name
+      type: object
+    AuditDashboard:
+      properties:
+        active_sessions:
+          type: integer
+        failed_logins:
+          type: integer
+        locked_accounts:
+          type: integer
+        login_trends:
+          items:
+            $ref: '#/components/schemas/TimeseriesData'
+          type: array
+        period:
+          type: string
+        security_events:
+          type: integer
+        security_trends:
+          items:
+            $ref: '#/components/schemas/TimeseriesData'
+          type: array
+        top_activities:
+          items:
+            $ref: '#/components/schemas/ActivityMetric'
+          type: array
+        total_users:
+          type: integer
+      required:
+      - period
+      - total_users
+      - active_sessions
+      - failed_logins
+      - locked_accounts
+      - security_events
+      - top_activities
+      - login_trends
+      - security_trends
+      type: object
+    AuditQuery:
+      properties:
+        days:
+          type: integer
+        hours:
+          type: integer
+      type: object
+    AuthResponse:
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/UserResponse'
+      required:
+      - token
+      - user
+      type: object
+    AuthenticateRequest:
+      properties:
+        actor_id:
+          type: string
+        algorithm:
+          type: string
+        nonce:
+          type: string
+        signature:
+          type: string
+      required:
+      - actor_id
+      - nonce
+      - algorithm
+      - signature
+      type: object
+    AuthenticateResponse:
+      properties:
+        actor_id:
+          type: string
+        credential_label:
+          type: string
+        expires_at:
+          type: integer
+        token:
+          type: string
+        token_type:
+          type: object
+      required:
+      - token
+      - token_type
+      - actor_id
+      - expires_at
+      - credential_label
+      type: object
+    AuthenticationAnalysis:
+      properties:
+        failure_analysis:
+          items:
+            $ref: '#/components/schemas/FailureAnalysis'
+          type: array
+        geographic_distribution:
+          items:
+            $ref: '#/components/schemas/GeographicMetric'
+          type: array
+        login_patterns:
+          items:
+            $ref: '#/components/schemas/LoginPattern'
+          type: array
+      required:
+      - login_patterns
+      - failure_analysis
+      - geographic_distribution
+      type: object
+    AuthenticationStats:
+      properties:
+        failed_logins:
+          type: integer
+        oauth_logins:
+          type: integer
+        password_resets:
+          type: integer
+        success_rate:
+          type: number
+        successful_logins:
+          type: integer
+      required:
+      - successful_logins
+      - failed_logins
+      - oauth_logins
+      - password_resets
+      - success_rate
+      type: object
+    BootstrapAdminRequest:
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        token:
+          type: string
+        username:
+          type: string
+      required:
+      - token
+      - email
+      - username
+      - password
+      type: object
+    BootstrapAdminResponse:
+      properties:
+        email:
+          type: string
+        is_admin:
+          type: boolean
+        user_id:
+          type: string
+      required:
+      - user_id
+      - email
+      - is_admin
+      type: object
+    CategoryMetric:
+      properties:
+        category:
+          type: string
+        count:
+          type: integer
+        percentage:
+          type: number
+      required:
+      - category
+      - count
+      - percentage
+      type: object
+    ChallengeRequest:
+      properties:
+        actor_id:
+          type: string
+      required:
+      - actor_id
+      type: object
+    CreateOidcClientRequest:
+      properties:
+        access_token_lifetime:
+          type: integer
+        allowed_grant_types:
+          items:
+            type: object
+          type: array
+        allowed_response_types:
+          items:
+            type: object
+          type: array
+        allowed_scopes:
+          items:
+            type: string
+          type: array
+        client_name:
+          type: string
+        client_type:
+          type: object
+        id_token_lifetime:
+          type: integer
+        post_logout_redirect_uris:
+          items:
+            type: string
+          type: array
+        redirect_uris:
+          items:
+            type: string
+          type: array
+        refresh_token_lifetime:
+          type: integer
+        require_pkce:
+          type: boolean
+      required:
+      - client_name
+      - client_type
+      - redirect_uris
+      type: object
+    CreatePermissionRequest:
+      properties:
+        action:
+          type: string
+        description:
+          type: string
+        display_name:
+          type: string
+        name:
+          type: string
+        resource:
+          type: string
+      required:
+      - name
+      - display_name
+      - resource
+      - action
+      type: object
+    CreateRoleRequest:
+      properties:
+        description:
+          type: string
+        display_name:
+          type: string
+        name:
+          type: string
+      required:
+      - name
+      - display_name
+      type: object
+    CreateUserPreferencesRequest:
+      properties:
+        date_format:
+          type: string
+        email_notifications:
+          type: boolean
+        language:
+          type: string
+        marketing_emails:
+          type: boolean
+        newsletter:
+          type: boolean
+        security_emails:
+          type: boolean
+        sms_notifications:
+          type: boolean
+        theme:
+          type: string
+        time_format:
+          type: string
+        timezone:
+          type: string
+      type: object
+    CreateUserProfileRequest:
+      properties:
+        bio:
+          type: string
+        date_of_birth:
+          type: object
+        display_name:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        locale:
+          type: string
+        location:
+          type: string
+        phone:
+          type: string
+        timezone:
+          type: string
+        website:
+          type: string
+      type: object
+    CreateUserRequest:
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        username:
+          type: string
+      required:
+      - email
+      - password
+      type: object
+    CredentialResponse:
+      properties:
+        algorithm:
+          type: string
+        created_at:
+          type: integer
+        id:
+          type: string
+        label:
+          type: string
+        last_used_at:
+          type: integer
+        public_key:
+          type: string
+        revoked_at:
+          type: integer
+        status:
+          type: string
+      required:
+      - id
+      - public_key
+      - algorithm
+      - label
+      - status
+      - created_at
+      type: object
+    DatabaseHealth:
+      properties:
+        connected:
+          type: boolean
+        response_time_ms:
+          type: integer
+      required:
+      - connected
+      - response_time_ms
+      type: object
+    DisableMfaRequest:
+      properties:
+        totp_code:
+          type: string
+      required:
+      - totp_code
+      type: object
+    EnableTotpRequest:
+      properties:
+        totp_code:
+          type: string
+      required:
+      - totp_code
+      type: object
+    ExecutiveSummary:
+      properties:
+        active_users:
+          type: integer
+        risk_level:
+          type: string
+        security_incidents:
+          type: integer
+        success_rate:
+          type: number
+        total_users:
+          type: integer
+      required:
+      - total_users
+      - active_users
+      - security_incidents
+      - success_rate
+      - risk_level
+      type: object
+    FailureAnalysis:
+      properties:
+        count:
+          type: integer
+        failure_reason:
+          type: string
+        percentage:
+          type: number
+      required:
+      - failure_reason
+      - count
+      - percentage
+      type: object
+    FrequencyMetric:
+      properties:
+        frequency_range:
+          type: string
+        percentage:
+          type: number
+        user_count:
+          type: integer
+      required:
+      - frequency_range
+      - user_count
+      - percentage
+      type: object
+    GeographicMetric:
+      properties:
+        count:
+          type: integer
+        country:
+          type: string
+        region:
+          type: string
+      required:
+      - country
+      - region
+      - count
+      type: object
+    HourlyActivity:
+      properties:
+        count:
+          type: integer
+        hour:
+          type: integer
+      required:
+      - hour
+      - count
+      type: object
+    InitializePasswordRequest:
+      properties:
+        password:
+          type: string
+      required:
+      - password
+      type: object
+    IpActivityMetric:
+      properties:
+        failed_attempts:
+          type: integer
+        ip_address:
+          type: string
+        is_locked:
+          type: boolean
+        last_attempt:
+          type: object
+      required:
+      - ip_address
+      - failed_attempts
+      - is_locked
+      - last_attempt
+      type: object
+    IssuedChallenge:
+      properties:
+        actor_id:
+          type: string
+        algorithm:
+          type: object
+        expires_at:
+          type: integer
+        nonce:
+          type: string
+        payload:
+          type: string
+      required:
+      - actor_id
+      - nonce
+      - expires_at
+      - payload
+      - algorithm
+      type: object
+    JwkKey:
+      properties:
+        alg:
+          type: string
+        e:
+          type: string
+        kid:
+          type: string
+        kty:
+          type: string
+        n:
+          type: string
+        use:
+          type: string
+      required:
+      - kty
+      - use
+      - alg
+      - kid
+      - n
+      - e
+      type: object
+    JwksResponse:
+      properties:
+        keys:
+          items:
+            $ref: '#/components/schemas/JwkKey'
+          type: array
+      required:
+      - keys
+      type: object
+    ListClientsQuery:
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+      type: object
+    ListClientsResponse:
+      properties:
+        clients:
+          items:
+            $ref: '#/components/schemas/OidcClientResponse'
+          type: array
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+      required:
+      - clients
+      - total
+      - limit
+      - offset
+      type: object
+    LockoutCheckResult:
+      properties:
+        is_locked:
+          type: boolean
+        lockout_type:
+          type: object
+        message:
+          type: string
+        remaining_attempts:
+          type: integer
+        remaining_lockout_seconds:
+          type: integer
+      required:
+      - is_locked
+      - remaining_attempts
+      - message
+      type: object
+    LockoutQuery:
+      properties:
+        identifier:
+          type: string
+        scope:
+          type: object
+      required:
+      - scope
+      - identifier
+      type: object
+    LockoutStats:
+      properties:
+        active_lockouts:
+          type: integer
+        average_lockout_duration_minutes:
+          type: number
+        ip_lockouts:
+          type: integer
+        user_lockouts:
+          type: integer
+      required:
+      - user_lockouts
+      - ip_lockouts
+      - active_lockouts
+      - average_lockout_duration_minutes
+      type: object
+    LoginPattern:
+      properties:
+        count:
+          type: integer
+        pattern_type:
+          type: string
+        trend:
+          type: string
+      required:
+      - pattern_type
+      - count
+      - trend
+      type: object
+    LoginRequest:
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+      - email
+      - password
+      type: object
+    MemoryStats:
+      properties:
+        available_mb:
+          type: number
+        usage_percentage:
+          type: number
+        used_mb:
+          type: number
+      required:
+      - used_mb
+      - available_mb
+      - usage_percentage
+      type: object
+    MfaLoginVerifyRequest:
+      properties:
+        admin:
+          type: boolean
+        backup_code:
+          type: string
+        temp_token:
+          type: string
+        totp_code:
+          type: string
+      required:
+      - temp_token
+      - admin
+      type: object
+    MfaStatusResponse:
+      properties:
+        backup_codes_count:
+          type: integer
+        enabled:
+          type: boolean
+        last_used_at:
+          type: object
+        method:
+          type: object
+      required:
+      - enabled
+      - backup_codes_count
+      type: object
+    OAuthCallback:
+      properties:
+        code:
+          type: string
+        state:
+          type: string
+      required:
+      - code
+      type: object
+    OAuthLoginQuery:
+      properties:
+        state:
+          type: string
+      type: object
+    OidcClientResponse:
+      properties:
+        access_token_lifetime:
+          type: integer
+        allowed_grant_types:
+          items:
+            type: object
+          type: array
+        allowed_response_types:
+          items:
+            type: object
+          type: array
+        allowed_scopes:
+          items:
+            type: string
+          type: array
+        client_id:
+          type: string
+        client_name:
+          type: string
+        client_secret:
+          type: string
+        client_type:
+          type: object
+        created_at:
+          type: integer
+        id_token_lifetime:
+          type: integer
+        is_active:
+          type: boolean
+        post_logout_redirect_uris:
+          items:
+            type: string
+          type: array
+        redirect_uris:
+          items:
+            type: string
+          type: array
+        refresh_token_lifetime:
+          type: integer
+        require_pkce:
+          type: boolean
+        updated_at:
+          type: integer
+      required:
+      - client_id
+      - client_secret
+      - client_name
+      - client_type
+      - redirect_uris
+      - post_logout_redirect_uris
+      - allowed_scopes
+      - allowed_grant_types
+      - allowed_response_types
+      - require_pkce
+      - access_token_lifetime
+      - refresh_token_lifetime
+      - id_token_lifetime
+      - is_active
+      - created_at
+      - updated_at
+      type: object
+    OidcConfiguration:
+      properties:
+        authorization_endpoint:
+          type: string
+        code_challenge_methods_supported:
+          items:
+            type: string
+          type: array
+        end_session_endpoint:
+          type: string
+        grant_types_supported:
+          items:
+            type: string
+          type: array
+        id_token_signing_alg_values_supported:
+          items:
+            type: string
+          type: array
+        issuer:
+          type: string
+        jwks_uri:
+          type: string
+        response_types_supported:
+          items:
+            type: string
+          type: array
+        scopes_supported:
+          items:
+            type: string
+          type: array
+        subject_types_supported:
+          items:
+            type: string
+          type: array
+        token_endpoint:
+          type: string
+        token_endpoint_auth_methods_supported:
+          items:
+            type: string
+          type: array
+        userinfo_endpoint:
+          type: string
+      required:
+      - issuer
+      - authorization_endpoint
+      - token_endpoint
+      - userinfo_endpoint
+      - jwks_uri
+      - end_session_endpoint
+      - response_types_supported
+      - grant_types_supported
+      - subject_types_supported
+      - id_token_signing_alg_values_supported
+      - scopes_supported
+      - token_endpoint_auth_methods_supported
+      - code_challenge_methods_supported
+      type: object
+    PaginationQuery:
+      properties:
+        limit:
+          type: integer
+        page:
+          type: integer
+      type: object
+    PermissionCheckResponse:
+      properties:
+        has_permission:
+          type: boolean
+        permission:
+          type: string
+        user_id:
+          type: string
+      required:
+      - has_permission
+      - user_id
+      - permission
+      type: object
+    PermissionResponse:
+      properties:
+        action:
+          type: string
+        created_at:
+          type: integer
+        description:
+          type: string
+        display_name:
+          type: string
+        id:
+          type: string
+        is_system:
+          type: boolean
+        name:
+          type: string
+        resource:
+          type: string
+        updated_at:
+          type: integer
+      required:
+      - id
+      - name
+      - display_name
+      - resource
+      - action
+      - is_system
+      - created_at
+      - updated_at
+      type: object
+    RegenerateSecretResponse:
+      properties:
+        client_secret:
+          type: string
+        message:
+          type: string
+      required:
+      - client_secret
+      - message
+      type: object
+    RegisterRequest:
+      properties:
+        label:
+          type: string
+        public_key:
+          type: string
+      required:
+      - public_key
+      - label
+      type: object
+    RegisterResponse:
+      properties:
+        actor:
+          $ref: '#/components/schemas/ActorResponse'
+        credential:
+          $ref: '#/components/schemas/CredentialResponse'
+      required:
+      - actor
+      - credential
+      type: object
+    RemovePermissionFromRoleRequest:
+      properties:
+        permission_name:
+          type: string
+      required:
+      - permission_name
+      type: object
+    RemoveRoleRequest:
+      properties:
+        role_name:
+          type: string
+      required:
+      - role_name
+      type: object
+    RequestPasswordResetRequest:
+      properties:
+        email:
+          type: string
+      required:
+      - email
+      type: object
+    ResetPasswordRequest:
+      properties:
+        new_password:
+          type: string
+        token:
+          type: string
+      required:
+      - token
+      - new_password
+      type: object
+    RetentionMetrics:
+      properties:
+        daily_active_rate:
+          type: number
+        monthly_active_rate:
+          type: number
+        weekly_active_rate:
+          type: number
+      required:
+      - daily_active_rate
+      - weekly_active_rate
+      - monthly_active_rate
+      type: object
+    RoleCheckResponse:
+      properties:
+        has_role:
+          type: boolean
+        role:
+          type: string
+        user_id:
+          type: string
+      required:
+      - has_role
+      - user_id
+      - role
+      type: object
+    RoleResponse:
+      properties:
+        created_at:
+          type: integer
+        description:
+          type: string
+        display_name:
+          type: string
+        id:
+          type: string
+        is_system:
+          type: boolean
+        name:
+          type: string
+        permissions:
+          items:
+            type: string
+          type: array
+        updated_at:
+          type: integer
+      required:
+      - id
+      - name
+      - display_name
+      - is_system
+      - created_at
+      - updated_at
+      - permissions
+      type: object
+    RoleWithPermissions:
+      properties:
+        assigned_at:
+          type: object
+        description:
+          type: string
+        display_name:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        permissions:
+          items:
+            type: string
+          type: array
+      required:
+      - id
+      - name
+      - display_name
+      - permissions
+      - assigned_at
+      type: object
+    SecurityIncident:
+      properties:
+        affected_user:
+          type: string
+        description:
+          type: string
+        id:
+          type: string
+        incident_type:
+          type: string
+        ip_address:
+          type: string
+        resolved:
+          type: boolean
+        severity:
+          type: string
+        timestamp:
+          type: object
+      required:
+      - id
+      - incident_type
+      - severity
+      - ip_address
+      - description
+      - timestamp
+      - resolved
+      type: object
+    SecurityMetrics:
+      properties:
+        authentication_stats:
+          $ref: '#/components/schemas/AuthenticationStats'
+        failed_login_by_ip:
+          items:
+            $ref: '#/components/schemas/IpActivityMetric'
+          type: array
+        lockout_stats:
+          $ref: '#/components/schemas/LockoutStats'
+        period:
+          type: string
+        permission_denials:
+          type: integer
+        rate_limit_violations:
+          type: integer
+        suspicious_activities:
+          items:
+            $ref: '#/components/schemas/SuspiciousActivity'
+          type: array
+      required:
+      - period
+      - authentication_stats
+      - lockout_stats
+      - rate_limit_violations
+      - permission_denials
+      - failed_login_by_ip
+      - suspicious_activities
+      type: object
+    SecurityRecommendation:
+      properties:
+        category:
+          type: string
+        description:
+          type: string
+        estimated_impact:
+          type: string
+        priority:
+          type: string
+        title:
+          type: string
+      required:
+      - priority
+      - category
+      - title
+      - description
+      - estimated_impact
+      type: object
+    AuditIntegrityReport:
+      properties:
+        intact:
+          type: boolean
+        checked:
+          type: integer
+        unchained:
+          type: integer
+        chains:
+          type: integer
+        broken_chain:
+          type: string
+          nullable: true
+        broken_at:
+          type: integer
+          nullable: true
+        broken_reason:
+          type: string
+          nullable: true
+        checkpoints:
+          type: integer
+        checkpoints_verified:
+          type: integer
+      required:
+      - intact
+      - checked
+      - unchained
+      - chains
+      - checkpoints
+      - checkpoints_verified
+      type: object
+    SecurityReport:
+      properties:
+        authentication_analysis:
+          $ref: '#/components/schemas/AuthenticationAnalysis'
+        executive_summary:
+          $ref: '#/components/schemas/ExecutiveSummary'
+        generated_at:
+          type: object
+        period:
+          type: string
+        recommendations:
+          items:
+            $ref: '#/components/schemas/SecurityRecommendation'
+          type: array
+        security_incidents:
+          items:
+            $ref: '#/components/schemas/SecurityIncident'
+          type: array
+        user_behavior_analysis:
+          $ref: '#/components/schemas/UserBehaviorAnalysis'
+      required:
+      - generated_at
+      - period
+      - executive_summary
+      - authentication_analysis
+      - security_incidents
+      - user_behavior_analysis
+      - recommendations
+      type: object
+    SessionInfo:
+      properties:
+        created_at:
+          type: object
+        id:
+          type: string
+        ip_address:
+          type: string
+        is_current:
+          type: boolean
+        user_agent:
+          type: string
+      required:
+      - id
+      - created_at
+      - user_agent
+      - ip_address
+      - is_current
+      type: object
+    StatusMetric:
+      properties:
+        count:
+          type: integer
+        percentage:
+          type: number
+        status:
+          type: string
+      required:
+      - status
+      - count
+      - percentage
+      type: object
+    SuspiciousActivity:
+      properties:
+        activity_type:
+          type: string
+        count:
+          type: integer
+        first_seen:
+          type: object
+        ip_address:
+          type: string
+        last_seen:
+          type: object
+        risk_score:
+          type: integer
+        user_id:
+          type: string
+      required:
+      - ip_address
+      - activity_type
+      - count
+      - risk_score
+      - first_seen
+      - last_seen
+      type: object
+    SystemHealth:
+      properties:
+        active_sessions_count:
+          type: integer
+        database_status:
+          $ref: '#/components/schemas/DatabaseHealth'
+        memory_usage:
+          $ref: '#/components/schemas/MemoryStats'
+        pending_lockouts:
+          type: integer
+        timestamp:
+          type: object
+        uptime_seconds:
+          type: integer
+      required:
+      - timestamp
+      - database_status
+      - active_sessions_count
+      - pending_lockouts
+      - memory_usage
+      - uptime_seconds
+      type: object
+    TimeseriesData:
+      properties:
+        timestamp:
+          type: object
+        value:
+          type: integer
+      required:
+      - timestamp
+      - value
+      type: object
+    TotpSetupResponse:
+      properties:
+        backup_codes:
+          items:
+            type: string
+          type: array
+        qr_code:
+          type: string
+        secret:
+          type: string
+      required:
+      - secret
+      - qr_code
+      - backup_codes
+      type: object
+    UnlockRequest:
+      properties:
+        identifier:
+          type: string
+        scope:
+          type: object
+      required:
+      - scope
+      - identifier
+      type: object
+    UnlockResponse:
+      properties:
+        unlocked:
+          type: boolean
+      required:
+      - unlocked
+      type: object
+    UpdateAccountStatusRequest:
+      properties:
+        reason:
+          type: string
+        status:
+          type: object
+      required:
+      - status
+      type: object
+    UpdateMembershipRequest:
+      properties:
+        membership_expiry:
+          type: object
+        membership_level:
+          type: string
+      required:
+      - membership_level
+      type: object
+    UpdateRoleRequest:
+      properties:
+        description:
+          type: string
+        display_name:
+          type: string
+      type: object
+    UpdateUserPreferencesRequest:
+      properties:
+        date_format:
+          type: string
+        email_notifications:
+          type: boolean
+        language:
+          type: string
+        marketing_emails:
+          type: boolean
+        newsletter:
+          type: boolean
+        security_emails:
+          type: boolean
+        sms_notifications:
+          type: boolean
+        theme:
+          type: string
+        time_format:
+          type: string
+        timezone:
+          type: string
+      type: object
+    UpdateUserProfileRequest:
+      properties:
+        bio:
+          type: string
+        date_of_birth:
+          type: object
+        display_name:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        locale:
+          type: string
+        location:
+          type: string
+        phone:
+          type: string
+        timezone:
+          type: string
+        website:
+          type: string
+      type: object
+    UserActivityMetric:
+      properties:
+        activity_count:
+          type: integer
+        email:
+          type: string
+        last_activity:
+          type: object
+        user_id:
+          type: string
+      required:
+      - user_id
+      - email
+      - activity_count
+      - last_activity
+      type: object
+    UserActivityResponse:
+      properties:
+        action:
+          type: string
+        category:
+          type: object
+        details:
+          type: object
+        id:
+          type: string
+        ip_address:
+          type: string
+        status:
+          type: object
+        timestamp:
+          type: object
+        user_agent:
+          type: string
+        user_id:
+          type: string
+      required:
+      - id
+      - user_id
+      - action
+      - category
+      - ip_address
+      - user_agent
+      - details
+      - status
+      - timestamp
+      type: object
+    UserBehaviorAnalysis:
+      properties:
+        login_frequency_distribution:
+          items:
+            $ref: '#/components/schemas/FrequencyMetric'
+          type: array
+        peak_activity_hours:
+          items:
+            type: integer
+          type: array
+        user_retention_metrics:
+          $ref: '#/components/schemas/RetentionMetrics'
+      required:
+      - login_frequency_distribution
+      - peak_activity_hours
+      - user_retention_metrics
+      type: object
+    UserInfoResponse:
+      properties:
+        email:
+          type: string
+        email_verified:
+          type: boolean
+        name:
+          type: string
+        picture:
+          type: string
+        preferred_username:
+          type: string
+        profile:
+          type: string
+        sub:
+          type: string
+        updated_at:
+          type: integer
+      required:
+      - sub
+      type: object
+    UserListRequest:
+      properties:
+        limit:
+          type: integer
+        page:
+          type: integer
+        search:
+          type: string
+        sort_by:
+          type: string
+        sort_order:
+          type: string
+        status:
+          type: object
+      type: object
+    UserListResponse:
+      properties:
+        limit:
+          type: integer
+        page:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+        users:
+          items:
+            $ref: '#/components/schemas/UserResponse'
+          type: array
+      required:
+      - users
+      - total
+      - page
+      - limit
+      - total_pages
+      type: object
+    UserPreferencesResponse:
+      properties:
+        created_at:
+          type: object
+        date_format:
+          type: string
+        email_notifications:
+          type: boolean
+        id:
+          type: string
+        language:
+          type: string
+        marketing_emails:
+          type: boolean
+        newsletter:
+          type: boolean
+        security_emails:
+          type: boolean
+        sms_notifications:
+          type: boolean
+        theme:
+          type: string
+        time_format:
+          type: string
+        timezone:
+          type: string
+        updated_at:
+          type: object
+        user_id:
+          type: string
+      required:
+      - id
+      - user_id
+      - theme
+      - language
+      - email_notifications
+      - sms_notifications
+      - marketing_emails
+      - security_emails
+      - newsletter
+      - timezone
+      - date_format
+      - time_format
+      - created_at
+      - updated_at
+      type: object
+    UserProfileResponse:
+      properties:
+        avatar_url:
+          type: string
+        bio:
+          type: string
+        created_at:
+          type: object
+        date_of_birth:
+          type: object
+        display_name:
+          type: string
+        first_name:
+          type: string
+        id:
+          type: string
+        last_name:
+          type: string
+        locale:
+          type: string
+        location:
+          type: string
+        phone:
+          type: string
+        timezone:
+          type: string
+        updated_at:
+          type: object
+        user_id:
+          type: string
+        website:
+          type: string
+      required:
+      - id
+      - user_id
+      - created_at
+      - updated_at
+      type: object
+    UserResponse:
+      properties:
+        account_status:
+          type: object
+        created_at:
+          type: object
+        email:
+          type: string
+        has_password:
+          type: boolean
+        id:
+          type: string
+        is_admin:
+          type: boolean
+        last_login_at:
+          type: object
+        membership_expiry:
+          type: object
+        membership_level:
+          type: string
+        username:
+          type: string
+        verified:
+          type: boolean
+      required:
+      - id
+      - email
+      - username
+      - is_admin
+      - verified
+      - membership_level
+      - created_at
+      - has_password
+      - account_status
+      type: object
+    UserRoleResponse:
+      properties:
+        roles:
+          items:
+            $ref: '#/components/schemas/RoleWithPermissions'
+          type: array
+        user_id:
+          type: string
+      required:
+      - user_id
+      - roles
+      type: object
+
+  securitySchemes:
+    # 三种，不是一种。
+    #
+    # 把它们混成一个 `bearerAuth` 会产生具体的误导：读契约的人会以为
+    # /api/oidc/userinfo 收的是登录拿到的那枚会话令牌 —— 它收的是 OIDC
+    # 访问令牌，两者由不同端点签发、生命周期也不同。
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Session token, from POST /api/auth/login (or POST
+        /api/actors/authenticate for an AI actor). Used by every /api business
+        endpoint.
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      description: >-
+        OIDC access token, from POST /api/oidc/token. Used by
+        /api/oidc/userinfo **only**. Not interchangeable with the session token
+        above.
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: soulauth_session
+      description: >-
+        Browser session cookie. /api/oidc/authorize uses it to decide whether
+        this browser is logged in; its absence is a redirect to the login page,
+        not an error.
+
+tags:
+  - name: AI Actors
+  - name: Actors & Profiles
+  - name: Administration
+  - name: Audit
+  - name: Authentication
+  - name: Bootstrap
+  - name: Health
+  - name: OIDC
+  - name: OIDC Clients
+  - name: Operations
+  - name: Security
+
+paths:
+  /.well-known/openid-configuration:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_openid_configuration
+      description: >-
+        OpenID Provider metadata. Advertises only what the runtime implements — code flow,
+        RS256, S256 PKCE. Served at the site root and under /api/oidc/.
+      description_zh: >-
+        OpenID Provider 元数据。只广播运行时确实实现的能力：授权码流程、RS256、S256 PKCE。同时挂在站点根路径与 /api/oidc/ 前缀下。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcConfiguration'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/actors:
+    get:
+      tags:
+      - AI Actors
+      operationId: actors_list_actors
+      description: >-
+        List registered AI actors. Returns identity records only; credentials are fetched per
+        actor.
+      description_zh: >-
+        列出已注册的 AI 主体。只返回身份记录，凭证需按主体单独获取。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ActorResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+      - AI Actors
+      operationId: actors_register
+      description: >-
+        Register a non-human actor and attach its first Ed25519 verification key. No
+        HumanAccount is created — an AI actor has no email, username or password.
+      description_zh: >-
+        注册一个非人主体并为它挂上第一枚 Ed25519 验证密钥。不创建 HumanAccount：AI 主体没有邮箱、用户名或口令。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+  /api/actors/:actor_id:
+    get:
+      tags:
+      - AI Actors
+      operationId: actors_get_actor
+      description: >-
+        One AI actor's identity record.
+      description_zh: >-
+        返回单个 AI 主体的身份记录。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActorResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: actor_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/actors/:actor_id/credentials:
+    get:
+      tags:
+      - AI Actors
+      operationId: actors_list_credentials
+      description: >-
+        An actor's verification keys. Public keys only — reading this exposes nothing usable.
+      description_zh: >-
+        返回某个主体的验证密钥。只含公钥，读到它不会暴露任何可利用的内容。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CredentialResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: actor_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+      - AI Actors
+      operationId: actors_add_credential
+      description: >-
+        Add another key. Having several active at once is what makes rotation safe.
+      description_zh: >-
+        追加一枚密钥。多枚同时有效正是安全轮换的前提。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: actor_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+  /api/actors/:actor_id/credentials/:credential_id:
+    delete:
+      tags:
+      - AI Actors
+      operationId: actors_revoke_credential
+      description: >-
+        Revoke a key. The record is not deleted — otherwise the audit trail loses the answer to
+        which key a past authentication used.
+      description_zh: >-
+        吊销一枚密钥。记录不会被删除，否则审计将失去「那次认证用的是哪一枚密钥」的答案。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: actor_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: credential_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/actors/authenticate:
+    post:
+      tags:
+      - AI Actors
+      operationId: actors_authenticate
+      description: >-
+        Step two: submit an Ed25519 signature over the challenge in exchange for a session
+        token. The signed content is recomputed independently by the server, and the challenge
+        is consumed **before** verification.
+      description_zh: >-
+        第二步：提交对挑战的 Ed25519 签名，换取会话令牌。被签名内容由服务端独立重算，且挑战在验签**之前**就被消费。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticateResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticateRequest'
+  /api/actors/challenge:
+    post:
+      tags:
+      - AI Actors
+      operationId: actors_challenge
+      description: >-
+        Step one: obtain a single-use challenge. Public. An unknown actor and a suspended actor
+        return the same `invalid_credentials`, so this cannot become a channel for enumerating
+        subjects.
+      description_zh: >-
+        第一步：领取一次性挑战。公开端点。未知主体与已停用主体返回相同的 `invalid_credentials`，因此它无法成为枚举主体的信道。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedChallenge'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeRequest'
+  /api/actors/me:
+    get:
+      tags:
+      - AI Actors
+      operationId: actors_me
+      description: >-
+        Agent introspection. A human session token is explicitly refused with 403.
+      description_zh: >-
+        AI 主体自省。人类会话令牌会被以 403 明确拒绝。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActorResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/audit/activity-summary:
+    get:
+      tags:
+      - Audit
+      operationId: audit_get_activity_summary
+      description: >-
+        Activity counts grouped by category over a window.
+      description_zh: >-
+        按类别分组统计时间窗口内的活动量。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:audit.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivitySummary'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema: &id001
+          type: integer
+      - name: hours
+        in: query
+        required: false
+        schema: &id002
+          type: integer
+  /api/audit/dashboard:
+    get:
+      tags:
+      - Audit
+      operationId: audit_get_audit_dashboard
+      description: >-
+        Aggregate authentication activity over a window. The `days` parameter is clamped
+        server-side, so an absurd value returns a bounded window instead of scanning everything.
+      description_zh: >-
+        按时间窗口聚合认证活动。`days` 参数在服务端被截断，因此过大的取值得到的是有界窗口，而不会触发全表扫描。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:audit.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditDashboard'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema: *id001
+      - name: hours
+        in: query
+        required: false
+        schema: *id002
+  /api/audit/security-metrics:
+    get:
+      tags:
+      - Audit
+      operationId: audit_get_security_metrics
+      description: >-
+        Failed logins, lockouts and permission denials over a window. Requires
+        `soulauth:security.read`.
+      description_zh: >-
+        统计时间窗口内的登录失败、锁定与权限拒绝。需要 `soulauth:security.read` 权限。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:security.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityMetrics'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema: *id001
+      - name: hours
+        in: query
+        required: false
+        schema: *id002
+  /api/audit/integrity:
+    get:
+      tags:
+      - Audit
+      operationId: audit_verify_integrity
+      description: >-
+        Verify the audit hash chain and the signed checkpoints. Recomputes every
+        chained row's hash, checks the links and the sequence for gaps, and verifies
+        each checkpoint signature against this instance's own public key.
+      description_zh: >-
+        校验审计哈希链与已签名的 checkpoint。逐行重算摘要、检查链接与序号缺口，
+        并用本实例自己的公钥验证每个 checkpoint 的签名。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:audit.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditIntegrityReport'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/audit/security-report:
+    get:
+      tags:
+      - Audit
+      operationId: audit_generate_security_report
+      description: >-
+        A composed security report over a window.
+      description_zh: >-
+        生成时间窗口内的综合安全报告。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:audit.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityReport'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema: *id001
+      - name: hours
+        in: query
+        required: false
+        schema: *id002
+  /api/audit/system-health:
+    get:
+      tags:
+      - Audit
+      operationId: audit_get_system_health
+      description: >-
+        Database reachability, active session count, pending lockouts, memory and uptime.
+      description_zh: >-
+        返回数据库可达性、活跃会话数、待处理锁定、内存与运行时长。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:security.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemHealth'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/admin/login:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_admin_login
+      description: >-
+        Login for the administration console. Identical to the normal login, plus a check that
+        the account has console access.
+      description_zh: >-
+        管理控制台登录。流程与普通登录相同，额外校验该账号是否具备控制台访问权。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+  /api/auth/callback/github:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_github_callback
+      description: >-
+        GitHub's redirect target. Bindings are matched on `(provider, provider_subject)` as a
+        pair, never on the subject alone.
+      description_zh: >-
+        GitHub 的回调地址。绑定按 `(provider, provider_subject)` 成对匹配，绝不只按 subject 匹配。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: code
+        in: query
+        required: true
+        schema: &id003
+          type: string
+      - name: state
+        in: query
+        required: false
+        schema: &id004
+          type: string
+  /api/auth/callback/google:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_google_callback
+      description: >-
+        Google's redirect target. Verifies the signed `state` against the cookie nonce before
+        resolving the binding.
+      description_zh: >-
+        Google 的回调地址。在解析绑定之前，先校验签名过的 `state` 与 cookie 中的 nonce 是否一致。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: code
+        in: query
+        required: true
+        schema: *id003
+      - name: state
+        in: query
+        required: false
+        schema: *id004
+  /api/auth/initialize-password:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_initialize_password
+      description: >-
+        Set a password on an account that has none — typically one created through federated
+        login.
+      description_zh: >-
+        为尚无口令的账号设置口令，通常用于经联邦登录创建的账号。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitializePasswordRequest'
+  /api/auth/login:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_login
+      description: >-
+        Exchange email and password for a session token. Unknown account and wrong password
+        return the same error with the same timing. With MFA enabled, returns a short-lived
+        challenge token instead of a session.
+      description_zh: >-
+        用邮箱与口令换取会话令牌。账号不存在与口令错误返回相同的错误、耗时也相同。启用 MFA 时返回的是短期挑战令牌而非会话。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+  /api/auth/login/github:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_github_login
+      description: >-
+        Redirect to GitHub for federated login. Returns 501 when GitHub credentials are not
+        configured.
+      description_zh: >-
+        重定向到 GitHub 完成联邦登录。未配置 GitHub 凭证时返回 501。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: state
+        in: query
+        required: false
+        schema: &id005
+          type: string
+  /api/auth/login/google:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_google_login
+      description: >-
+        Redirect to Google for federated login. Returns 501 when Google credentials are not
+        configured — the route exists, the deployment has not enabled it.
+      description_zh: >-
+        重定向到 Google 完成联邦登录。未配置 Google 凭证时返回 501：路由存在，只是本部署没有启用它。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: state
+        in: query
+        required: false
+        schema: *id005
+  /api/auth/logout:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_logout
+      description: >-
+        Revoke the current session and clear the browser cookie. Effective immediately on this
+        instance; other replicas observe it within one cache TTL.
+      description_zh: >-
+        吊销当前会话并清除浏览器 cookie。在本实例上立即生效，其它副本在一个缓存 TTL 之内观察到。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/logout-all:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_logout_all
+      description: >-
+        Revoke every session belonging to the calling actor, not just the current one.
+      description_zh: >-
+        吊销调用方名下的全部会话，而不只是当前这一个。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/me:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_get_current_user
+      description: >-
+        The account behind the presented session token.
+      description_zh: >-
+        返回所出示会话令牌背后的账户。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/mfa/disable:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_mfa_disable
+      description: >-
+        Turn off TOTP for the calling account.
+      description_zh: >-
+        为调用账号关闭 TOTP。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DisableMfaRequest'
+  /api/auth/mfa/enable:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_mfa_enable
+      description: >-
+        Confirm enrolment with a valid TOTP code and activate MFA. Returns the backup codes,
+        which are shown only here.
+      description_zh: >-
+        用一枚有效的 TOTP 验证码确认绑定并启用 MFA。返回备用码，且只在此处显示一次。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnableTotpRequest'
+  /api/auth/mfa/login-verify:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_mfa_login_verify
+      description: >-
+        Second step of MFA login: exchange the challenge token plus a TOTP or backup code for a
+        session. Public, because the challenge token is the credential here.
+      description_zh: >-
+        MFA 登录的第二步：用挑战令牌加上 TOTP 验证码或备用码换取会话。公开端点，因为此处的凭证正是那枚挑战令牌。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaLoginVerifyRequest'
+  /api/auth/mfa/setup:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_mfa_setup
+      description: >-
+        Begin TOTP enrolment. Returns the secret and provisioning URI; MFA is not active until
+        `enable` confirms a valid code.
+      description_zh: >-
+        开始 TOTP 绑定。返回密钥与配置 URI；在 `enable` 确认一枚有效验证码之前，MFA 尚未生效。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpSetupResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/mfa/status:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_mfa_status
+      description: >-
+        Whether TOTP is enabled for the calling account, and how many backup codes remain.
+      description_zh: >-
+        返回调用账号是否已启用 TOTP，以及剩余备用码数量。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaStatusResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/register:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_register
+      description: >-
+        Create a human account. Enforces the password policy and, when email verification is
+        enabled, sends a verification link.
+      description_zh: >-
+        创建人类账户。执行口令策略；启用邮箱验证时会发送验证链接。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+  /api/auth/request-password-reset:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_request_password_reset
+      description: >-
+        Start password recovery. Always reports success — reporting failure only for registered
+        addresses would itself be an enumeration oracle. Any previous unused token for that
+        address is invalidated.
+      description_zh: >-
+        发起口令找回。永远返回成功：只对已注册地址报错，本身就成了账号枚举的信道。该地址此前未使用的令牌会一并作废。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestPasswordResetRequest'
+  /api/auth/resend-verification:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_resend_verification
+      description: >-
+        Issue a new verification token and resend the link. Already-verified accounts are
+        silently ignored, so this cannot be used as a mailer for arbitrary addresses.
+      description_zh: >-
+        签发新的验证令牌并重发链接。已验证的账号会被静默忽略，因此它无法被当作对任意地址发信的工具。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestPasswordResetRequest'
+  /api/auth/reset-password:
+    post:
+      tags:
+      - Authentication
+      operationId: auth_reset_password
+      description: >-
+        Complete password recovery. The token is claimed atomically before the password is
+        written, so two concurrent requests cannot both succeed. All the account's sessions are
+        revoked.
+      description_zh: >-
+        完成口令找回。令牌在写入新口令之前被原子抢占，因此两个并发请求不可能同时成功。该账号的全部会话都会被吊销。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+  /api/auth/sessions:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_get_sessions
+      description: >-
+        List the caller's active sessions. The entry matching the presented token is marked
+        `is_current`.
+      description_zh: >-
+        列出调用方的活跃会话。与所出示令牌对应的那一条标记为 `is_current`。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionInfo'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/auth/verify-email/:token:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_verify_email
+      description: >-
+        Consume an email verification token. Public by necessity — requiring a token to verify
+        an address would be circular. The token is claimed atomically, so it cannot be replayed.
+      description_zh: >-
+        消费一枚邮箱验证令牌。必须公开：要求先持有令牌才能验证地址是循环依赖。令牌被原子抢占，因此无法重放。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/bootstrap/admin:
+    post:
+      tags:
+      - Bootstrap
+      operationId: bootstrap_bootstrap_admin
+      description: >-
+        Create the first administrator using the one-time token printed at startup. Closes
+        permanently once an administrator exists, and then returns the same status for a correct
+        token as for a wrong one.
+      description_zh: >-
+        用启动时打印的一次性令牌创建第一个管理员。一旦存在管理员，这道门永久关闭，此后正确令牌与错误令牌返回同一状态码。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapAdminResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapAdminRequest'
+  /api/me/activity-log:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_activity_log
+      description: >-
+        The caller's own activity log.
+      description_zh: >-
+        返回调用方自己的活动记录。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityLogResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: category
+        in: query
+        required: false
+        schema: &id008
+          type: object
+      - name: end_date
+        in: query
+        required: false
+        schema: &id009
+          type: object
+      - name: limit
+        in: query
+        required: false
+        schema: &id010
+          type: integer
+      - name: page
+        in: query
+        required: false
+        schema: &id011
+          type: integer
+      - name: start_date
+        in: query
+        required: false
+        schema: &id012
+          type: object
+      - name: status
+        in: query
+        required: false
+        schema: &id013
+          type: object
+  /api/me/preferences:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_preferences
+      description: >-
+        The caller's own preferences.
+      description_zh: >-
+        返回调用方自己的偏好设置。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_create_user_preferences
+      description: >-
+        Create the caller's preferences.
+      description_zh: >-
+        创建调用方自己的偏好设置。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserPreferencesRequest'
+    put:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_update_user_preferences
+      description: >-
+        Update the caller's preferences.
+      description_zh: >-
+        更新调用方自己的偏好设置。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserPreferencesRequest'
+  /api/me/profile:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_profile
+      description: >-
+        The caller's own profile.
+      description_zh: >-
+        返回调用方自己的档案。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_create_user_profile
+      description: >-
+        Create the caller's profile.
+      description_zh: >-
+        创建调用方自己的档案。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserProfileRequest'
+    put:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_update_user_profile
+      description: >-
+        Update the caller's profile. Changing a display name does not change the identity.
+      description_zh: >-
+        更新调用方自己的档案。修改显示名不改变身份。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserProfileRequest'
+  /api/oidc/.well-known/openid-configuration:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_openid_configuration
+      description: >-
+        OpenID Provider metadata. Advertises only what the runtime implements — code flow,
+        RS256, S256 PKCE. Served at the site root and under /api/oidc/.
+      description_zh: >-
+        OpenID Provider 元数据。只广播运行时确实实现的能力：授权码流程、RS256、S256 PKCE。同时挂在站点根路径与 /api/oidc/ 前缀下。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcConfiguration'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/oidc/authorize:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_authorize
+      description: >-
+        Authorization endpoint. Authenticates the **browser session cookie**, not a bearer
+        token; an unauthenticated browser is redirected to the login page rather than refused.
+      description_zh: >-
+        授权端点。校验的是**浏览器会话 cookie** 而非 bearer 令牌；未登录的浏览器会被重定向到登录页，而不是直接拒绝。
+      security:
+      - browserSession: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/oidc/clients:
+    get:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_list_clients
+      description: >-
+        List registered clients. Never returns secrets.
+      description_zh: >-
+        列出已注册的客户端，永不返回密钥。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListClientsResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+    post:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_create_client
+      description: >-
+        Register an OIDC client. `client_secret` is returned **once** — it is stored as a hash
+        and cannot be read back.
+      description_zh: >-
+        注册 OIDC 客户端。`client_secret` **只返回一次**：它以哈希存储，之后无法读回。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClientResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOidcClientRequest'
+  /api/oidc/clients/:client_id:
+    delete:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_disable_client
+      description: >-
+        Disable a client. The record is kept so that tokens already issued to it remain
+        attributable.
+      description_zh: >-
+        停用客户端。记录保留，以便已经签发给它的令牌仍然可归因。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.write
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_get_client
+      description: >-
+        One client's configuration.
+      description_zh: >-
+        返回单个客户端的配置。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClientResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_update_client
+      description: >-
+        Update a client. `redirect_uris` is the most security-relevant field here: whoever can
+        change it can redirect a valid authorization code elsewhere.
+      description_zh: >-
+        更新客户端。`redirect_uris` 是其中安全相关性最强的字段：能修改它的人就能把有效授权码重定向到别处。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClientResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOidcClientRequest'
+  /api/oidc/clients/:client_id/regenerate-secret:
+    post:
+      tags:
+      - OIDC Clients
+      operationId: oidc_client_regenerate_secret
+      description: >-
+        Issue a new client secret and invalidate the old one immediately. Returned once.
+      description_zh: >-
+        签发新的客户端密钥并立即作废旧的。同样只返回一次。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:oidc_clients.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegenerateSecretResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/oidc/jwks:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_jwks
+      description: >-
+        Public signing keys in JWK Set form. Match on `kid` from the token header, and refetch
+        when an unknown `kid` appears.
+      description_zh: >-
+        以 JWK Set 形式发布的公开签名密钥。按令牌头中的 `kid` 匹配，遇到未知 `kid` 时重新拉取。
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/oidc/logout:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_logout
+      description: >-
+        End session endpoint. Reads `id_token_hint` and `post_logout_redirect_uri` from the
+        query string; the redirect target must be registered on the client.
+      description_zh: >-
+        结束会话端点。从查询串读取 `id_token_hint` 与 `post_logout_redirect_uri`，重定向目标必须已在客户端上登记。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/oidc/token:
+    post:
+      tags:
+      - OIDC
+      operationId: oidc_token
+      description: >-
+        Token endpoint. Supports authorization_code and refresh_token grants. Client credentials
+        go in `Authorization: Basic` or the form body, never both. Errors use the RFC 6749 §5.2
+        shape.
+      description_zh: >-
+        令牌端点。支持 authorization_code 与 refresh_token 两种 grant。客户端凭证放在 `Authorization: Basic`
+        或表单体中，不能两处都放。错误采用 RFC 6749 §5.2 的形状。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+  /api/oidc/userinfo:
+    get:
+      tags:
+      - OIDC
+      operationId: oidc_userinfo
+      description: >-
+        Claims for the subject behind an **OIDC access token** — not a session token. Fields are
+        trimmed to the granted scope, so `null` means out of scope rather than unset.
+      description_zh: >-
+        返回 **OIDC 访问令牌**（而非会话令牌）背后主体的 claims。字段按授予的 scope 裁剪，因此 `null` 表示不在 scope 内，而不是未设置。
+      security:
+      - oidcAccessToken: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfoResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/ops/memberships/overview:
+    get:
+      tags:
+      - Operations
+      operationId: ops_get_membership_overview
+      description: >-
+        Membership distribution, aggregated in the database rather than by loading every row.
+      description_zh: >-
+        会员分布概览。聚合在数据库内完成，不会把每一行都载入内存。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/rbac/check/permission/:permission_name:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_check_permission
+      description: >-
+        Whether the **calling** actor holds a permission. Needs only a session, so a client can
+        use it to decide what to render.
+      description_zh: >-
+        判断**调用方自己**是否持有某条权限。只需一枚会话令牌，客户端可用它决定界面上显示什么。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: permission_name
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/check/role/:role_name:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_check_role
+      description: >-
+        Whether the **calling** actor holds a role.
+      description_zh: >-
+        判断**调用方自己**是否持有某个角色。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleCheckResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/permissions:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_list_permissions
+      description: >-
+        List permissions.
+      description_zh: >-
+        列出权限。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:permissions.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PermissionResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema: &id006
+          type: integer
+      - name: page
+        in: query
+        required: false
+        schema: &id007
+          type: integer
+    post:
+      tags:
+      - Administration
+      operationId: rbac_create_permission
+      description: >-
+        Create a permission. A permission that no handler checks grants nothing —
+        `conformance::j1` asserts in both directions.
+      description_zh: >-
+        创建权限。没有任何 handler 检查的权限不授予任何东西，`conformance::j1` 会双向断言这一点。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:permissions.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePermissionRequest'
+  /api/rbac/permissions/:permission_name:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_get_permission
+      description: >-
+        One permission by name.
+      description_zh: >-
+        按名称返回单条权限。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:permissions.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: permission_name
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/roles:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_list_roles
+      description: >-
+        List roles.
+      description_zh: >-
+        列出角色。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema: *id006
+      - name: page
+        in: query
+        required: false
+        schema: *id007
+    post:
+      tags:
+      - Administration
+      operationId: rbac_create_role
+      description: >-
+        Create a role.
+      description_zh: >-
+        创建角色。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+  /api/rbac/roles/:role_name:
+    delete:
+      tags:
+      - Administration
+      operationId: rbac_delete_role
+      description: >-
+        Delete a role.
+      description_zh: >-
+        删除角色。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.delete
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+      - Administration
+      operationId: rbac_get_role
+      description: >-
+        One role with its permissions.
+      description_zh: >-
+        返回单个角色及其权限。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+      - Administration
+      operationId: rbac_update_role
+      description: >-
+        Update a role's display name or description.
+      description_zh: >-
+        更新角色的显示名或描述。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+  /api/rbac/roles/:role_name/permissions:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_get_role_permissions
+      description: >-
+        The permission names attached to a role.
+      description_zh: >-
+        返回挂在某个角色上的权限名。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/roles/:role_name/permissions/assign:
+    post:
+      tags:
+      - Administration
+      operationId: rbac_assign_permission_to_role
+      description: >-
+        Attach a permission to a role. The role name comes from the path; the body carries only
+        the permission name.
+      description_zh: >-
+        把一条权限挂到角色上。角色名取自路径参数，请求体只携带权限名。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:permissions.write
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignPermissionToRoleRequest'
+  /api/rbac/roles/:role_name/permissions/remove:
+    post:
+      tags:
+      - Administration
+      operationId: rbac_remove_permission_from_role
+      description: >-
+        Detach a permission from a role.
+      description_zh: >-
+        把一条权限从角色上摘下。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:permissions.write
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: role_name
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemovePermissionFromRoleRequest'
+  /api/rbac/users/:user_id/permissions:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_get_user_permissions
+      description: >-
+        An actor's effective permission names, resolved through its roles.
+      description_zh: >-
+        返回某个主体经由角色解析出的有效权限名。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/users/:user_id/roles:
+    get:
+      tags:
+      - Administration
+      operationId: rbac_get_user_roles
+      description: >-
+        An actor's roles.
+      description_zh: >-
+        返回某个主体的角色。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRoleResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/rbac/users/:user_id/roles/assign:
+    post:
+      tags:
+      - Administration
+      operationId: rbac_assign_role_to_user
+      description: >-
+        Grant a role to an actor.
+      description_zh: >-
+        把某个角色授予一个主体。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.write
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRoleRequest'
+  /api/rbac/users/:user_id/roles/remove:
+    post:
+      tags:
+      - Administration
+      operationId: rbac_remove_role_from_user
+      description: >-
+        Remove a role from an actor.
+      description_zh: >-
+        从某个主体收回一个角色。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:roles.write
+      responses:
+        '204':
+          description: No Content
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoveRoleRequest'
+  /api/security/lockout:
+    get:
+      tags:
+      - Security
+      operationId: security_get_lockout_status
+      description: >-
+        Current lockout records, per account and per IP.
+      description_zh: >-
+        返回当前的锁定记录，按账号与按 IP 两个维度。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:security.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockoutCheckResult'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: identifier
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: scope
+        in: query
+        required: true
+        schema:
+          type: object
+  /api/security/unlock:
+    post:
+      tags:
+      - Security
+      operationId: security_unlock
+      description: >-
+        Clear a lockout. Idempotent: unlocking something that is not locked returns `false`
+        rather than erroring. Both lock and unlock are audited.
+      description_zh: >-
+        解除锁定。幂等：对未被锁定的对象解锁返回 `false` 而不是报错。上锁与解锁都会写审计。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:security.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnlockResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnlockRequest'
+  /api/users:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_list_users
+      description: >-
+        List accounts. Requires `soulauth:users.read`.
+      description_zh: >-
+        列出账户，需要 `soulauth:users.read` 权限。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: sort_order
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: object
+  /api/users/:user_id:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_by_id
+      description: >-
+        One account by id.
+      description_zh: >-
+        按 id 返回单个账户。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/users/:user_id/activity-log:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_activity_log_by_id
+      description: >-
+        Another actor's activity log. Requires `soulauth:audit.read`, not `users.read`.
+      description_zh: >-
+        返回其他主体的活动记录。需要的是 `soulauth:audit.read` 而不是 `users.read`。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:audit.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityLogResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: category
+        in: query
+        required: false
+        schema: *id008
+      - name: end_date
+        in: query
+        required: false
+        schema: *id009
+      - name: limit
+        in: query
+        required: false
+        schema: *id010
+      - name: page
+        in: query
+        required: false
+        schema: *id011
+      - name: start_date
+        in: query
+        required: false
+        schema: *id012
+      - name: status
+        in: query
+        required: false
+        schema: *id013
+  /api/users/:user_id/membership:
+    put:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_update_user_membership
+      description: >-
+        Change membership level and expiry.
+      description_zh: >-
+        修改会员等级与到期时间。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMembershipRequest'
+  /api/users/:user_id/preferences:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_preferences_by_id
+      description: >-
+        Another actor's preferences.
+      description_zh: >-
+        返回其他主体的偏好设置。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/users/:user_id/profile:
+    get:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_get_user_profile_by_id
+      description: >-
+        Another actor's profile.
+      description_zh: >-
+        返回其他主体的档案。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.read
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/users/:user_id/status:
+    put:
+      tags:
+      - Actors & Profiles
+      operationId: user_management_update_user_account_status
+      description: >-
+        Change an account's status. Suspension stops **future** authentication; sessions on
+        other replicas persist for up to one cache TTL. History is not rewritten.
+      description_zh: >-
+        修改账户状态。停用挡住的是**未来**的认证；其它副本上已有的会话最多还能存续一个缓存 TTL。历史不被改写。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:users.write
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountStatusResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountStatusRequest'
+  /health:
+    get:
+      tags:
+      - Health
+      operationId: main_health
+      description: >-
+        Liveness probe. Public, and registered after the rate-limiting layer so a prober never
+        gets a 429.
+      description_zh: >-
+        存活探针。公开端点，且注册在限流层之后，探针不会被 429 打回。
+      security: []
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
