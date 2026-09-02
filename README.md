@@ -13,7 +13,7 @@ the machine-readable contract, and the operations pages.
 > 中文版本见 [README.zh-CN.md](README.zh-CN.md)。
 
 ```
-axum 0.6 · SurrealDB 3.0 · 71 paths / 84 operations · ~22k lines
+axum 0.6 · SurrealDB 3.0 · 72 paths / 85 operations · ~24k lines
 188 unit tests (no external dependencies) · 27 integration groups / 355 assertions
 ```
 
@@ -129,7 +129,7 @@ OIDC client library.
 
 ## API surface
 
-84 operations over 71 paths. `contracts/openapi.yaml` is the authoritative list and
+85 operations over 72 paths. `contracts/openapi.yaml` is the authoritative list and
 `tests/conformance.rs::j4` holds it against the route table in both directions; this is
 the shape of it.
 

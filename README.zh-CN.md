@@ -12,7 +12,7 @@
 > English version: [README.md](README.md)（主版本）
 
 ```
-axum 0.6 · SurrealDB 3.0 · 71 条路径 / 84 个 operation · 约 2.2 万行
+axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
 单元测试 188 项（零外部依赖）· 集成测试 27 组 355 项断言
 ```
 
@@ -121,7 +121,7 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 
 ## 接口面
 
-71 条路径、84 个 operation。`contracts/openapi.yaml` 是权威清单，
+72 条路径、85 个 operation。`contracts/openapi.yaml` 是权威清单，
 `tests/conformance.rs::j4` 拿它与路由表双向对账；这里给的是它的形状。
 
 | 前缀 | operation | 覆盖 |
