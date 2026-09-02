@@ -1,40 +1,213 @@
 # SoulAuth
 
-自己部署的认证服务，用 Rust 写，说标准 OpenID Connect —— 接过 Keycloak 或 Auth0
-的客户端库不改代码就能接它。
+**面向 Human 与 AIActor 的 Actor-native 身份基础设施。**
 
-它跟别家的区别是：AI 主体有自己的身份记录和自己的 Ed25519 密钥，不是一行填了
-假邮箱的 `user`。
-
-**文档站：<https://soulauth.trantorlabs.sg/zh/start/what-is-soulauth>** —— 接入指南、由机器可读契约渲染的
-完整 API 参考，以及运维那几页。
+SoulAuth 是由**新加坡 TRANTOR LABS** 构建的开源身份与认证基础设施。它使用 Rust
+实现，支持自托管与 OpenID Connect，可独立服务 Web、Backend、API 与 AI / Agent
+系统，也可以原生接入 SoulseedOS。
 
 > English version: [README.md](README.md)（主版本）
+> 完整文档：**<https://soulauth.trantorlabs.sg/>**
 
-```
-axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
-单元测试 188 项（零外部依赖）· 集成测试 27 组 355 项断言
-```
+传统身份系统通常默认身份主体是 Human User，Bot、Service Account 或 Agent 只是附着在
+人类账户或应用之下的特殊对象。随着 AI 从一次性调用逐渐走向能够持续理解、判断、调用
+工具并参与现实行动的 Actor，一个更基础的问题开始出现：
 
-![SoulAuth 架构](docs/figures/architecture.zh.png)
+> **谁正在被认证？**
 
-这张图画的是逻辑职责，不是调用时序，也不是部署图 —— 图中的一切目前都跑在同一个
-进程里。
+SoulAuth 从这个问题出发，把 **Actor Identity** 放在身份模型的中心。Human 与 AIActor
+都可以成为一等身份主体；它们可以拥有不同的 Credential、Authentication Method 与
+Lifecycle，但进入同一套 Actor-native Identity Contract。
 
 ---
 
-## 它是什么，以及它刻意不是什么
+## 一个以 Actor 为中心的身份模型
 
-**它回答「这是谁」**：注册、登录、邮箱验证、密码重置、MFA、第三方登录、
-AI 主体认证、会话生命周期，以及一个供其它系统验签的 OIDC Provider。
+![一个以 Actor 为中心的身份模型](docs/figures/figure-2-actor-centred-identity-model.zh.png)
 
-**它不回答「这个人在你的系统里能做什么」**。SoulAuth 自带一套 RBAC，但那套
-RBAC 只管**它自己的管理后台**。它定义的每个权限都带 `soulauth:` 命名空间
-前缀，原因正在于此——接入方系统很可能也有一个 `users.read`，两者同名不同物。
+Human 与 AIActor 的「一等身份法位」并不意味着二者拥有相同的 Credential、能力、
+生命周期、权限或法律地位，而是意味着它们都可以独立成为可识别、可认证、可建立
+AuthSession、可通过 Token 表达并可被 Audit 归因的身份主体。
 
-这个区分在接入时才显出重量：在这里授出的角色是一条关于账号的**声明**，
-永远不等于接入方内部的授权判定。详见
-[把 SoulAuth 当 OIDC Provider 用](#把-soulauth-当-oidc-provider-用)。
+**Actor Identity 是身份根，Credential 是证明主体的方式。** Human 可以使用 Password、
+MFA 或外部身份，AIActor 可以使用适合机器主体的 Key-based Credential；不同认证路径
+最终进入同一个 Authentication Core，并输出标准化的 Authenticated Identity / Claims。
+
+SoulAuth 负责证明一个 Actor 是谁，但不会因为认证成功就自动赋予它行动权力。在
+Soulseed 环境中，AIActor 的本体由 SoulseedAGI 定义，SoulAuth 通过受控的 Canonical
+Actor Binding 对这个主体进行数字身份认证，而不定义、修改或拥有它的 Mind。
+
+---
+
+## 为什么是 Actor-native Identity
+
+今天的大语言模型已经提供越来越强的生成、理解、推理和工具使用能力。我们更愿意把 LLM
+理解为智能时代类似 CPU 的通用计算能力：它提供智能，却不会自动形成一个长期智能系统所
+需要的身份、连续性、责任和治理秩序。
+
+当 AI 从一次调用逐渐成为持续存在的 Actor，系统就必须能够稳定回答：是谁在理解，
+是谁在判断，是谁在行动，结果最终归属于谁。
+
+这也是 SoulAuth 采用 **Actor First** 的原因。在 Memory、Knowledge、Judgment、Action
+与 Accountability 之前，首先建立稳定的「谁」。
+
+SoulAuth 因而不把传统 `User` 继续当作所有身份对象的根，也不是简单给 User 表增加一个
+`type = ai` 字段。几个基本边界长期成立：
+
+```text
+Actor Identity ≠ Account
+Actor Identity ≠ Credential
+Actor Identity ≠ Client
+
+Authentication ≠ Authority
+```
+
+Human Account、Identity Binding、Credential 与 Client 都有自己的职责，但它们都不能
+替代 Actor Identity。
+
+---
+
+## Soulseed：LLM 之上的 AGI 基础设施
+
+SoulAuth 可以独立运行，但它不是一个孤立的思想项目。它也是新加坡 TRANTOR LABS 对 AGI
+基础设施问题的一部分回答。
+
+我们的基本判断是：如果 LLM 提供智能能力，那么真正面向长期 AIActor 的系统仍然需要在其
+上建立 Mind、持续运行、治理、应用，以及进入公共现实所需要的系统秩序。
+
+![Soulseed：LLM 之上的 AGI 基础设施](docs/figures/figure-1-soulseed-agi-infrastructure.zh.png)
+
+这套基础设施可以从四个责任层理解。
+
+**SoulseedAGI｜心智内核**定义 AIActor 与持续 Mind。
+
+**SoulseedOS｜运行与治理操作系统**让 Mind 持续、安全、可治理地运行。
+
+**Soulseed Apps｜应用层**把 Mind 与操作系统能力转化为真实应用。
+
+**Public Reality Infrastructure｜公共现实基础设施**承接跨主体可验证的公共事实与信任。
+
+SoulAuth 位于这套体系的身份基础设施位置，但不是 SoulseedAGI 的组成部分，也不是
+SoulseedOS 的内部模块。它保持独立边界，可以被 SoulseedOS 组合使用，也可以完全独立
+服务其他系统。
+
+> **SoulseedAGI 定义主体与 Mind，SoulAuth 认证主体，SoulseedOS 运行并治理主体。**
+
+---
+
+## SoulAuth 负责什么，也不负责什么
+
+SoulAuth 的边界终止于**可信身份事实**。
+
+| 能力 | 核心职责 |
+|---|---|
+| **Actor Identity** | 确定谁是当前可认证的数字主体 |
+| **Credential** | 管理 Actor 用什么证明自己 |
+| **Authentication** | 判断当前身份凭证是否成立 |
+| **AuthSession** | 维持已经成立的认证状态 |
+| **Token & Federation** | 通过 Token、OIDC 与 SSO 表达身份事实 |
+| **Control Plane** | 管理 Identity、Credential、Client 与 Auth-local RBAC |
+| **Security Protection** | 保护 Credential、Authentication、Session、Token 与 Key 生命周期 |
+| **Audit & Attribution** | 记录谁通过什么过程成为当前身份 |
+
+SoulAuth 不定义 Mind，也不替代更高层治理系统。Authentication 成功不会自动产生
+Mandate、业务 Permission、Governance Decision、Lease 或现实执行权。
+
+最简洁的边界是：
+
+> **Identity 回答「是谁」，Authority 回答「为什么这个 Actor 此时此地有权行动」。**
+
+SoulAuth 自带一个小的 RBAC 模型，但它只治理 **SoulAuth 自身的管理面**。它定义的每一条
+权限都带 `soulauth:` 前缀正是为此 —— 接入方很可能也有自己的 `users.read`，两者只是
+恰好同名的不同东西。在这里授出的角色是关于账户的一项*声明*，从来不是接入方内部的
+授权判断。见[把 SoulAuth 当 OIDC Provider 用](#把-soulauth-当-oidc-provider-用)。
+
+---
+
+## SoulAuth 架构
+
+![SoulAuth 架构](docs/figures/figure-3-soulauth-architecture.zh.png)
+
+SoulAuth 以 **Actor Identity** 为身份根，将 Human Account、Identity Binding 与
+Credential 分离。Credential 进入 Authentication Core 建立可信身份事实，**AuthSession**
+保持认证连续性，随后通过 **Token & Federation** 以 Token、OIDC、SSO 与 Claims 的形式
+交给外部 Consumer。
+
+**Control Plane、Security Protection 与 Audit & Attribution** 横向覆盖整个身份生命
+周期；底层 **Persistence & Infrastructure** 则提供数据、Key、External IdP 与 Adapter
+等运行边界。
+
+图上是逻辑职责，不是调用时序，也不是部署图 —— 图中的一切今天都跑在同一个进程里。
+SoulAuth 默认可以继续保持较小的运行面，例如 Rust Service 与 SurrealDB，但物理部署
+简单并不意味着内部领域可以混写：
+
+> **One Database ≠ One Domain.**
+
+Identity、Credential、AuthSession、OIDC、Security 与 Audit 即使由同一数据库承载，
+也仍然拥有不同的逻辑 Source、生命周期和责任边界。
+
+---
+
+## 两种使用方式
+
+**Standalone。** SoulAuth 可以作为独立 Identity Provider 服务传统 Web、Backend、API
+与 AI / Agent 系统，通过 Authentication、AuthSession、OIDC、Token 与 Claims 提供完整
+身份能力。
+
+```text
+SoulAuth
+   ↓
+Any Application
+```
+
+**在 Soulseed 中。** SoulAuth 通过稳定 Adapter 向 SoulseedOS 提供经过认证的 Actor
+身份事实。对于 SoulseedAGI 已经定义的 Canonical AIActor，SoulAuth 可以维护受控身份
+绑定，但不会读取、修改或拥有其 Mind。
+
+```text
+SoulseedAGI
+Canonical AIActor
+      │
+Canonical Actor Binding
+      ▼
+   SoulAuth
+      │
+Authenticated Identity
+      ▼
+  SoulseedOS
+```
+
+两种方式使用同一个 SoulAuth Core。Soulseed 是原生集成方向，但不是使用 SoulAuth 的
+前提。
+
+---
+
+## 为什么使用 Rust
+
+身份基础设施需要明确的数据所有权、强类型边界、内存安全和可预测的系统行为。我们希望
+Identity、Credential、AuthSession 与其它安全边界不仅存在于架构文档中，也能够尽可能
+成为代码本身不容易违反的约束。
+
+---
+
+## Security & Trust
+
+Security 与 Audit 不是 SoulAuth 部署完成以后再增加的外围能力，而是身份基础设施本身的
+一部分。Credential、Authentication、AuthSession、Token、Key、External IdP 与 Audit
+Integrity 都被视为明确的安全边界，并围绕 MFA、Lockout、Replay Protection、Token Reuse
+Detection、Key Lifecycle 与 Tamper-evident Audit 建立持续保护。
+
+具体做法见下面的[生产姿态](#生产姿态)；安全问题的上报路径由
+[SECURITY.md](SECURITY.md) 定义。
+
+---
+
+以下全部是操作性的内容：怎么跑起来、对外暴露什么、怎么测的，以及哪些地方还不完整。
+
+```text
+axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
+单元测试 188 项（零外部依赖）· 集成测试 27 组 355 项断言
+```
 
 ---
 
@@ -341,6 +514,20 @@ DEPLOYMENT.zh-CN.md
 部署步骤在 [DEPLOYMENT.zh-CN.md](DEPLOYMENT.zh-CN.md) —— 它和英文主版本
 `DEPLOYMENT.md` 是同一份内容，后者正是
 `tests/deployment_walkthrough.sh` 每次推送都要执行一遍的对象。
+
+---
+
+## 关于 SoulAuth
+
+SoulAuth 的目标不是把身份能力锁在某个应用、模型或生态中，而是提供一个**可独立部署、
+基于开放标准、通过稳定 Contract 与其它系统组合的身份基础设施**。Consumer 不需要读取
+SoulAuth 私有数据库，也不应该依赖其内部实现才能正确使用它。
+
+SoulAuth 由 **TRANTOR LABS｜Singapore** 构建。TRANTOR LABS 关注的不是单一 AI 产品，
+而是 AGI 时代更基础的问题：当智能逐渐成为普遍能力以后，主体、判断、身份、责任、治理
+与公共现实应该怎样被组织成真正可以运行的基础设施。
+
+> **哲学定义问题，工程验证答案。**
 
 ---
 
