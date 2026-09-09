@@ -1,0 +1,38 @@
+# Machine-readable citation metadata. GitHub reads this file and offers a
+# "Cite this repository" button with BibTeX and APA generated from it.
+#
+# `version` is checked against Cargo.toml, contracts/openapi.yaml and CHANGELOG.md
+# by tests/conformance.rs::j19 — the four are declared separately and drift silently.
+#
+# A file cannot contain the hash of the commit that contains it. The commit belongs
+# with the release, not here: the GitHub Release for each tag records the commit and
+# the checksum of the archive, and a paper should cite the tag and that commit together.
+cff-version: 1.2.0
+message: If you use SoulAuth in academic work, please cite it as below.
+title: "SoulAuth: Actor-native identity infrastructure for Human and AIActor subjects"
+abstract: >-
+  SoulAuth is self-hosted identity and authentication infrastructure written in Rust.
+  It speaks standard OpenID Connect, and takes Actor Identity rather than User as the
+  root of the identity model, so a human and an AI actor can each be a first-class
+  authenticable subject: a human proves itself with a password, MFA or an external
+  identity, an AI actor with an Ed25519 challenge-response, and both converge on one
+  authentication core. Authentication is kept strictly separate from authority.
+type: software
+authors:
+  - name: TRANTOR LABS
+    address: Singapore
+    website: https://soulauth.trantorlabs.sg/
+repository-code: https://github.com/TrantorLabs/SoulAuth
+url: https://soulauth.trantorlabs.sg/
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-09-09
+keywords:
+  - identity
+  - authentication
+  - OpenID Connect
+  - AI agents
+  - actor-native identity
+  - Rust
+# Add the Zenodo DOI here once the first GitHub Release has been archived:
+# doi: 10.5281/zenodo.XXXXXXX

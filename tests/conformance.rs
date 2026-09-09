@@ -3153,6 +3153,109 @@ fn j18_the_audit_writer_is_a_singleton() {
     );
 }
 
+/// J19 · 版本号在四个地方声明，四个必须一致
+///
+/// `0.1.0` 现在写在四处：`Cargo.toml`、`contracts/openapi.yaml` 的 `info.version`、
+/// `CHANGELOG.md` 最新的已发布小节，以及 `CITATION.cff`。四处都是手写的。
+///
+/// 这不是洁癖。论文与外部引用锚定的是版本号：契约声称 0.1.0 而 CITATION 说 0.2.0
+/// 的时候，读者拿到的两份「同一版本」的东西其实不是同一份代码，而这种偏差不会让
+/// 任何测试变红 —— 它只会在有人试图复现的那一天显现。
+///
+/// 这里刻意**不**去比对 git tag：CI 用 `fetch-depth: 1` 检出，拿不到 tag，
+/// 把守卫建在检出方式上会让它在本地绿、在 CI 上假绿。tag 与 commit 的对应
+/// 关系由 Release 页面和 CITATION.cff 承担。
+#[test]
+fn j19_version_is_declared_consistently() {
+    // ① Cargo.toml —— [package] 里的第一个 version
+    let cargo = read("Cargo.toml");
+    let pkg = cargo
+        .split_once("[package]")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&cargo);
+    let cargo_version = pkg
+        .lines()
+        .find_map(|l| {
+            let t = l.trim();
+            t.strip_prefix("version")?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches('"')
+                .to_string()
+                .into()
+        })
+        .expect("Cargo.toml 的 [package] 里没有 version");
+
+    // ② contracts/openapi.yaml —— info.version
+    let openapi = read("contracts/openapi.yaml");
+    let after_info = openapi
+        .split_once("\ninfo:")
+        .map(|(_, rest)| rest)
+        .expect("openapi.yaml 里没有 info:");
+    let openapi_version = after_info
+        .lines()
+        .take_while(|l| l.trim().is_empty() || l.starts_with("  ") || l.starts_with('\t'))
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("version:")?
+                .trim()
+                .trim_matches('"')
+                .to_string()
+                .into()
+        })
+        .expect("openapi.yaml 的 info 里没有 version");
+
+    // ③ CHANGELOG.md —— 最新的已发布小节，形如 `## [0.1.0] - 2026-09-09`
+    let changelog = read("CHANGELOG.md");
+    let (changelog_version, changelog_date) = changelog
+        .lines()
+        .find_map(|l| {
+            let rest = l.trim().strip_prefix("## [")?;
+            let (v, rest) = rest.split_once(']')?;
+            if v == "Unreleased" {
+                return None;
+            }
+            let date = rest.trim().strip_prefix('-')?.trim().to_string();
+            Some((v.to_string(), date))
+        })
+        .expect("CHANGELOG.md 里没有任何已发布的版本小节");
+    assert!(
+        changelog_date.len() == 10 && changelog_date.starts_with("20"),
+        "CHANGELOG 的 {changelog_version} 没有 YYYY-MM-DD 形式的发布日期，读到的是 `{changelog_date}`"
+    );
+
+    // ④ CITATION.cff —— 外部引用真正会读的那一份
+    let citation = read("CITATION.cff");
+    let citation_version = citation
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("version:")?
+                .trim()
+                .trim_matches('"')
+                .to_string()
+                .into()
+        })
+        .expect("CITATION.cff 里没有 version");
+
+    for (what, got) in [
+        ("contracts/openapi.yaml 的 info.version", &openapi_version),
+        ("CHANGELOG.md 最新的已发布小节", &changelog_version),
+        ("CITATION.cff 的 version", &citation_version),
+    ] {
+        assert_eq!(
+            got, &cargo_version,
+            "{what} 是 {got}，而 Cargo.toml 是 {cargo_version} —— 发版要四处一起改"
+        );
+    }
+
+    // CITATION.cff 必须指向仓库本体，否则「可引用」是空话。
+    assert!(
+        citation.contains("repository-code:") && citation.contains("github.com/TrantorLabs/SoulAuth"),
+        "CITATION.cff 里没有指向仓库的 repository-code"
+    );
+}
+
 /// 被路由 handler 签名引用到的请求/响应类型，及其 serde 字段名。
 fn request_response_types() -> Vec<(String, Vec<String>)> {
     let all = sources();

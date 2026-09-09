@@ -531,6 +531,19 @@ SoulAuth 由 **TRANTOR LABS｜Singapore** 构建。TRANTOR LABS 关注的不是�
 
 ---
 
+## 引用 SoulAuth
+
+请同时给出 tag 与 commit，不要只给仓库地址 —— `main` 会往前走，一个解析到「当前状态」
+的引用日后无法核对。
+
+> SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth
+
+[CITATION.cff](CITATION.cff) 是同一份元数据的机器可读形式，GitHub 会通过
+*Cite this repository* 按钮把它转成 BibTeX。每个 Release 都记录它构建自哪个 commit，
+以及归档文件的校验和。
+
+---
+
 ## 许可
 
 Apache-2.0，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

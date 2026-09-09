@@ -589,6 +589,19 @@ governance and public reality be organised into infrastructure that actually run
 
 ---
 
+## Citing SoulAuth
+
+Cite the tag and the commit together, not the repository URL on its own — `main` moves,
+and a citation that resolves to "whatever is current" cannot be checked later.
+
+> SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth
+
+[CITATION.cff](CITATION.cff) carries the same metadata in machine-readable form; GitHub
+turns it into BibTeX through the *Cite this repository* button. Each release records the
+commit it was built from and the checksum of its archive.
+
+---
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

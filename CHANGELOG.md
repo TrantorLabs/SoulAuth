@@ -28,6 +28,17 @@ translated copy drifts within weeks.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-09-09
+
+First public release, and the version referenced by the SoulAuth paper. The tag
+`v0.1.0` points at the commit this section describes; `CITATION.cff` records the same
+version and commit so a citation resolves to one fixed state of the code rather than to
+whatever `main` happens to be.
+
+Everything below is relative to the pre-release state of the codebase.
+
 ### Added
 
 - **Tamper-evident audit.** Every `user_activity` row carries `seq`, `previous_hash` and
