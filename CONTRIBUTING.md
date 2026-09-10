@@ -15,8 +15,8 @@ fixes, documentation and obviously-scoped bug fixes need no issue.
 ## Running the checks
 
 ```bash
-cargo test                                # 188 unit tests + 61 conformance invariants
-cargo build && ./tests/integration.sh     # 27 groups, 355 assertions, real database
+cargo test                                # 188 unit tests + 65 conformance invariants
+cargo build && ./tests/integration.sh     # 27 groups, 351 assertions, real database
 ./tests/deployment_walkthrough.sh         # executes DEPLOYMENT.md from an empty database
 ```
 
@@ -57,7 +57,7 @@ snapshot was taken from a clean tree, but not that it is up to date.
 ## Architecture invariants
 
 `tests/conformance.rs` asserts architectural rules against the source and the schema —
-things like "an ActorIdentity is not a credential" and "the audit log is chained". Nine
+things like "an ActorIdentity is not a credential" and "the audit log is chained". Seven
 of them are `#[ignore]`d because they do not hold yet; each carries the stage it belongs
 to. `cargo test --test conformance -- --ignored` lists them.
 

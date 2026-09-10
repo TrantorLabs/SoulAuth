@@ -488,8 +488,9 @@ impl Config {
             return Err(ConfigError::Invalid {
                 name: "MFA_SECRET_ENCRYPTION_KEY",
                 reason: "a dedicated MFA encryption key is required when APP_URL is not a \
-                        loopback address; deriving it from JWT_SECRET means rotating \
-                        JWT_SECRET locks every MFA user out. Generate one with \
+                        loopback address. There is no fallback: MFA is unavailable without \
+                        it, because deriving it from another secret would mean rotating that \
+                        secret locks every MFA user out. Generate one with \
                         `openssl rand -base64 32`"
                     .to_string(),
             });

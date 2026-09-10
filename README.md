@@ -230,8 +230,8 @@ Everything from here on is operational: how to run it, what it exposes, how it i
 tested, and where it is still incomplete.
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 72 paths / 85 operations · ~24k lines
-188 unit tests (no external dependencies) · 27 integration groups / 355 assertions
+axum 0.6 · SurrealDB 3.0 · 71 paths / 84 operations · ~24k lines
+188 unit tests (no external dependencies) · 65 architecture invariants · 27 integration groups / 351 assertions
 ```
 
 ---
@@ -323,7 +323,7 @@ OIDC client library.
 
 ## API surface
 
-85 operations over 72 paths. `contracts/openapi.yaml` is the authoritative list and
+84 operations over 71 paths. `contracts/openapi.yaml` is the authoritative list and
 `tests/conformance.rs::j4` holds it against the route table in both directions; this is
 the shape of it.
 
@@ -335,10 +335,9 @@ the shape of it.
 | `/api/actors` | 9 | AI actor registration, credential add and revoke, challenge, authenticate, self-introspection |
 | `/api/me` | 7 | own profile, preferences and activity log |
 | `/api/users` | 7 | admin reads plus account-status and membership writes |
-| `/api/audit` | 5 | dashboard, activity summary, security metrics, security report, system health |
+| `/api/audit` | 6 | dashboard, activity summary, security metrics, security report, system health, hash-chain verification |
 | `/api/security` | 2 | lockout status query, manual unlock (user or IP) |
 | `/api/bootstrap` | 1 | create the first administrator with the one-time startup token |
-| `/api/ops` | 1 | membership overview |
 | `/.well-known` | 1 | discovery document at the root path |
 | `/health` | 1 | liveness probe (outside the rate limiter) |
 
@@ -430,7 +429,7 @@ Two layers with different jobs. Neither substitutes for the other.
 
 ```bash
 cargo test              # 188 unit tests, no external dependencies
-cargo build && ./tests/integration.sh   # 27 groups, 355 assertions
+cargo build && ./tests/integration.sh   # 27 groups, 351 assertions
 ```
 
 **Unit tests** cover pure logic and consistency invariants — permission names
@@ -535,10 +534,11 @@ DEPLOYMENT.zh-CN.md
 
 ## Known limitations
 
-- **The conformance suite carries 9 invariants that do not hold yet.** They are
+- **The conformance suite carries 7 invariants that do not hold yet.** They are
   `#[ignore]`d rather than deleted, each labelled with the stage it belongs to, and
-  `cargo test --test conformance -- --ignored` prints the list. They cover identity,
-  credentials, audit and repository separation.
+  `cargo test --test conformance -- --ignored` prints the list. They cover the unified
+  credential table, the uniform authentication result, audit attribution and repository
+  separation.
 - **No front-end.** SoulAuth is an API. Mail links and post-OAuth redirects
   point at paths under `APP_URL` — `/verify-email`, `/reset-password/{token}`,
   `/login`, `/oauth/callback`, `/initialize-password`. The first three are

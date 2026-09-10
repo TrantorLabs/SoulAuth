@@ -357,7 +357,6 @@ async fn main() -> anyhow::Result<()> {
         // 「按 id 管别人的」。合在一个前缀下才有了之前的 `/api/users/users/...`。
         .nest("/api/me", routes::user_management::self_service_router())
         .nest("/api/users", routes::user_management::admin_router())
-        .nest("/api/ops", routes::ops::router())
         .nest("/api/security", routes::security::router())
         .nest("/api/audit", routes::audit::audit_routes())
         .nest("/api/oidc", routes::oidc::oidc_routes())

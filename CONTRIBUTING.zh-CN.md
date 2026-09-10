@@ -13,8 +13,8 @@
 ## 本地要跑什么
 
 ```bash
-cargo test                                # 188 项单测 + 61 条一致性不变式
-cargo build && ./tests/integration.sh     # 27 组、355 项断言，跑在真实数据库上
+cargo test                                # 188 项单测 + 65 条一致性不变式
+cargo build && ./tests/integration.sh     # 27 组、351 项断言，跑在真实数据库上
 ./tests/deployment_walkthrough.sh         # 从空库执行一遍 DEPLOYMENT.md
 ```
 
@@ -54,7 +54,7 @@ CI 跑的是 `cargo clippy --all-targets -- -D warnings`，所以一条警告就
 ## 架构不变式
 
 `tests/conformance.rs` 对着源码与 schema 断言架构规则 —— 比如「ActorIdentity 不是
-Credential」「审计日志是链式的」。其中 9 条标了 `#[ignore]`，因为它们还不成立，
+Credential」「审计日志是链式的」。其中 7 条标了 `#[ignore]`，因为它们还不成立，
 每条都注明属于哪个 Stage。用 `cargo test --test conformance -- --ignored` 可以列出。
 
 **放松那个文件里的断言，是比它看起来更大的改动。** 如果你的改动让某条挂了，

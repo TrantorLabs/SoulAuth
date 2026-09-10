@@ -370,7 +370,6 @@ fn a7_oauth_client_is_not_an_actor() {
 /// 身份回答「你是谁」，订阅回答「你购买了什么」。商业套餐与定价都不属于
 /// 认证内核；把它放在这里，等于把计费档位放到安全路径上。
 #[test]
-#[ignore = "V2 Stage 6 —— membership_level/expiry 挂在 user 上，且 ops.rs 硬编码定价"]
 fn a8_membership_is_not_identity() {
     for f in ["membership_level", "membership_expiry"] {
         assert!(
@@ -503,16 +502,51 @@ fn b4b_bearer_secrets_are_not_stored_in_clear() {
 
 /// B5 · 三类 Key 不得共用
 ///
-/// Token 签名密钥 / 凭证加密密钥 / 审计完整性密钥性质不同，共用一把意味着
-/// 轮换其中一个用途就会连带破坏另外两个。
+/// Token 签名密钥（`JWT_SECRET`）、凭证加密密钥（`MFA_SECRET_ENCRYPTION_KEY`）、
+/// 审计完整性密钥（`AUDIT_INTEGRITY_KEY`）性质不同：第一把会被轮换（泄露、定期
+/// 轮换、换算法都会轮），后两把一旦轮换就让既有数据不可用。共用或派生意味着
+/// 轮换其中一个用途会连带破坏另外两个。
+///
+/// 这条断言曾经写成「config.rs 里同时出现 `jwt_secret` 与
+/// `MFA_SECRET_ENCRYPTION_KEY` 就算违反」—— 那个判据本身是错的：两个键名当然会
+/// 同时出现在配置模块里，所以它既拦不住真正的派生，又会在代码正确时照样报红。
+/// 现在断言的是真东西：**造这两把钥匙的模块不得读取 Token 签名密钥。**
 #[test]
-#[ignore = "V2 Stage 4 —— MFA 加密密钥在未配置时从 JWT_SECRET 派生"]
 fn b5_key_material_is_segregated() {
+    // 只看代码，不看散文 —— 注释里解释「不从 jwt_secret 派生」不该被当成违反。
+    fn code_only(body: &str) -> String {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // 三把钥匙必须是三个独立的配置项。
     let cfg = read("src/config.rs");
-    let derives = cfg.contains("jwt_secret") && cfg.contains("MFA_SECRET_ENCRYPTION_KEY");
+    for field in ["jwt_secret", "mfa_encryption_key", "audit_integrity_key"] {
+        assert!(
+            cfg.contains(field),
+            "config.rs 里没有 `{field}` —— 三类 Key 应当各有独立来源"
+        );
+    }
+
+    // 凭证加密与审计完整性这两个模块，不得碰 Token 签名密钥。要从 `jwt_secret`
+    // 派生出另一把钥匙，必须先在这里读到它 —— 所以这是派生唯一可能发生的地方。
+    for module in ["src/utils/crypto.rs", "src/services/audit_integrity.rs"] {
+        let code = code_only(&read(module));
+        assert!(
+            !code.contains("jwt_secret"),
+            "{module} 读取了 jwt_secret —— 凭证加密密钥与审计完整性密钥不得从 \
+             Token 签名密钥派生。轮换 JWT_SECRET 会连带让已存 TOTP 密钥解不开、\
+             或让既有 checkpoint 签名失效。"
+        );
+    }
+
+    // 缺密钥时必须是「不可用」，不能是「换一把凑」。
     assert!(
-        !derives,
-        "MFA 加密密钥不得从 JWT_SECRET 派生 —— 轮换 JWT_SECRET 会锁死每个 MFA 用户"
+        read("src/utils/crypto.rs").contains("Result<Option<Self>>"),
+        "SecretCipher::from_config 必须能表达「没有配置专用密钥」这一状态 —— \
+         返回 Option，而不是在内部回落到另一把钥匙"
     );
 }
 
@@ -3251,9 +3285,125 @@ fn j19_version_is_declared_consistently() {
 
     // CITATION.cff 必须指向仓库本体，否则「可引用」是空话。
     assert!(
-        citation.contains("repository-code:") && citation.contains("github.com/TrantorLabs/SoulAuth"),
+        citation.contains("repository-code:")
+            && citation.contains("github.com/TrantorLabs/SoulAuth"),
         "CITATION.cff 里没有指向仓库的 repository-code"
     );
+}
+
+/// J20 · README 的接口面表必须逐前缀对上契约
+///
+/// 两份 README 都有一张「前缀 / operation 数 / 覆盖什么」的表。那些数字是手写的，
+/// 而它们已经漂过三次，每次都是同一个形状：契约加了端点，表没跟上。
+///
+/// - 加 `/api/audit/integrity` 时，`/api/audit` 那一行停在 5，真值是 6；
+/// - 同一次改动里，横幅的路径总数停在 71/84，真值是 72/85；
+/// - 删掉 `/api/ops` 时，表里那一行会留下来，指向一个不存在的前缀。
+///
+/// 三次都不是粗心的上限：**没有任何守卫看这张表**。`j4` 对账的是契约与路由表，
+/// 两边都对，所以 CI 全绿而 README 单独漂走。读者拿这张表当目录用，它错的时候
+/// 人家会去找一个不存在的端点。
+///
+/// 这里同时查三件事：前缀集合一致、每行的数字一致、合计等于 operation 总数。
+/// 合计那一条不是冗余 —— 它挡住「两行各错一个、正负抵消」。
+#[test]
+fn j20_readme_api_surface_table_matches_the_contract() {
+    // 契约里的 operation 按前缀归并。归并规则要和表里的写法一致：
+    // `/api/xxx/...` 归到 `/api/xxx`，`/.well-known/...` 归到 `/.well-known`，
+    // 其余（只有 `/health`）就是它本身。
+    let contract = read("contracts/openapi.yaml");
+    let mut truth: Vec<(String, usize)> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in contract.lines() {
+        // 路径键：两个空格缩进 + `/`，行尾冒号。
+        if let Some(rest) = line.strip_prefix("  /") {
+            if let Some(p) = rest.strip_suffix(':') {
+                let full = format!("/{p}");
+                let prefix = if let Some(tail) = full.strip_prefix("/api/") {
+                    format!("/api/{}", tail.split('/').next().unwrap_or(""))
+                } else if full.starts_with("/.well-known") {
+                    "/.well-known".to_string()
+                } else {
+                    full.clone()
+                };
+                current = Some(prefix.clone());
+                if !truth.iter().any(|(k, _)| *k == prefix) {
+                    truth.push((prefix, 0));
+                }
+                continue;
+            }
+        }
+        // operation：四个空格缩进的 HTTP 动词。
+        let verb = line.strip_prefix("    ").unwrap_or("");
+        if ["get:", "post:", "put:", "patch:", "delete:"].contains(&verb) {
+            let Some(prefix) = &current else { continue };
+            if let Some(entry) = truth.iter_mut().find(|(k, _)| k == prefix) {
+                entry.1 += 1;
+            }
+        }
+    }
+    let total: usize = truth.iter().map(|(_, n)| n).sum();
+    assert!(
+        truth.len() > 5 && total > 50,
+        "只从契约解析出 {} 个前缀 / {total} 个 operation —— 解析逻辑失效了",
+        truth.len()
+    );
+
+    for doc in ["README.md", "README.zh-CN.md"] {
+        let body = read(doc);
+        let mut rows: Vec<(String, usize)> = Vec::new();
+        for line in body.lines() {
+            // | `/api/auth` | 21 | … |
+            let Some(rest) = line.strip_prefix("| `/") else {
+                continue;
+            };
+            let Some((prefix, rest)) = rest.split_once('`') else {
+                continue;
+            };
+            let Some(rest) = rest.trim_start().strip_prefix('|') else {
+                continue;
+            };
+            let digits: String = rest
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            let Ok(n) = digits.parse::<usize>() else {
+                continue;
+            };
+            rows.push((format!("/{prefix}"), n));
+        }
+        assert!(
+            rows.len() > 5,
+            "{doc} 里只解析出 {} 行接口面 —— 表的写法变了，这条守卫得跟着改",
+            rows.len()
+        );
+
+        for (prefix, claimed) in &rows {
+            let actual = truth
+                .iter()
+                .find(|(k, _)| k == prefix)
+                .map(|(_, n)| *n)
+                .unwrap_or_else(|| {
+                    panic!("{doc} 的接口面表里有 `{prefix}`，但契约里没有这个前缀 —— 端点删了，表没跟上")
+                });
+            assert_eq!(
+                *claimed, actual,
+                "{doc} 说 `{prefix}` 有 {claimed} 个 operation，契约里是 {actual} 个"
+            );
+        }
+        for (prefix, _) in &truth {
+            assert!(
+                rows.iter().any(|(k, _)| k == prefix),
+                "契约里有 `{prefix}`，但 {doc} 的接口面表里没有这一行 —— 加了端点，表没跟上"
+            );
+        }
+        let claimed_total: usize = rows.iter().map(|(_, n)| n).sum();
+        assert_eq!(
+            claimed_total, total,
+            "{doc} 的接口面表合计 {claimed_total} 个 operation，契约是 {total} 个"
+        );
+    }
 }
 
 /// 被路由 handler 签名引用到的请求/响应类型，及其 serde 字段名。

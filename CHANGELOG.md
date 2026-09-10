@@ -18,7 +18,7 @@ break them is the contract, the schema and the configuration:
 | A new optional configuration key | patch |
 | Internal refactoring, bug fixes, documentation | patch |
 
-**On 1.0:** `tests/conformance.rs` still carries 9 architecture invariants that do not
+**On 1.0:** `tests/conformance.rs` still carries 7 architecture invariants that do not
 hold yet. Releasing 1.0 while the suite says a stage is unfinished would claim something
 the tests themselves contradict, so 1.0 waits until that count reaches zero.
 
@@ -28,7 +28,71 @@ translated copy drifts within weeks.
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- **The MFA encryption key is no longer derived from `JWT_SECRET`.** When
+  `MFA_SECRET_ENCRYPTION_KEY` was unset, the key that seals every stored TOTP secret was
+  derived from `JWT_SECRET` and the process carried on with a warning. `JWT_SECRET` is a
+  secret that gets rotated — on exposure, on a schedule, on an algorithm change — and
+  rotating it made every stored TOTP secret permanently undecryptable: every enrolled
+  user locked out at once, with a startup log line from months earlier as the only clue.
+  There is now no fallback. The three keys (token signing, credential encryption, audit
+  integrity) are independent, which `tests/conformance.rs::b5` asserts.
+
+### Removed
+
+- **`GET /api/ops/memberships/overview`.** The endpoint reported how many accounts sat
+  in each membership tier, and carried a hard-coded price list in its response
+  (`"PRO": {"price": 19.9}`). Pricing is not an authentication concern, and an identity
+  service that ships one cannot be deployed by anyone whose tiers differ. Membership
+  reporting belongs to whatever system owns billing, which can aggregate the field it
+  already owns. The contract is now 71 paths and 84 operations.
+
+### Changed
+
+- **Membership level is an opaque label.** `PUT /api/users/:user_id/membership` validated
+  the value against five hard-coded tier names and rejected anything else, so adding a
+  tier meant changing SoulAuth and redeploying it. It now validates shape only —
+  uppercased, 1 to 32 characters, letters, digits, `_` and `-` — and stores the label
+  without interpreting it. Values that were previously rejected are now accepted; the
+  contract already declared this field as a plain string.
+- **MFA requires `MFA_SECRET_ENCRYPTION_KEY`.** Without it the MFA endpoints return
+  `503 service_unavailable` naming the missing variable, instead of working on a derived
+  key. Startup is unaffected: an instance that does not use MFA still runs on the four
+  variables the quickstart sets. A non-loopback `APP_URL` already required the key at
+  startup and still does.
+
+### Upgrade steps
+
+1. **If you enrolled MFA users while `MFA_SECRET_ENCRYPTION_KEY` was unset**, their
+   stored secrets were sealed with a key derived from `JWT_SECRET` and cannot be carried
+   over — the derivation no longer exists. Those users must re-enrol. Count them before
+   upgrading:
+
+   ```bash
+   surreal sql --endpoint http://127.0.0.1:8000 --user root --pass root \
+       --namespace auth --database main --pretty \
+       <<< "SELECT count() FROM user_mfa WHERE totp_secret != NONE GROUP ALL;"
+   ```
+
+   If that returns zero, there is nothing to do.
+
+2. **Set the key** if you use MFA at all, not only in production:
+
+   ```bash
+   MFA_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+   ```
+
+   Keep it with your other secrets and separately from database backups: a database dump
+   alone yields no usable TOTP codes, a dump plus this key does.
+
+3. **If anything calls `/api/ops/memberships/overview`**, it now receives 404. The same
+   figure comes from one query against the database you already have:
+
+   ```sql
+   SELECT membership_level, count() AS total FROM user
+     WHERE account_status != 'Deleted' GROUP BY membership_level;
+   ```
 
 ## [0.1.0] - 2026-09-09
 

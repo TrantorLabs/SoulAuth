@@ -6,9 +6,9 @@
 //! * TOTP 密钥必须可逆（要用它算验证码），因此用 ChaCha20-Poly1305 加密后落库；
 //! * 备用恢复码不需要可逆，改为 Argon2 哈希存储，校验时逐条比对。
 //!
-//! 加密密钥来自 `MFA_SECRET_ENCRYPTION_KEY`（base64 的 32 字节）。未配置时从
-//! `jwt_secret` 派生并告警 —— 能让存量部署直接升级，但两者轮换会互相牵连，
-//! 生产环境应显式配置。
+//! 加密密钥只来自 `MFA_SECRET_ENCRYPTION_KEY`（base64 的 32 字节），**没有回落**。
+//! 未配置时 MFA 明确不可用（503），而不是从 `jwt_secret` 派生一把出来：派生能让
+//! 部署跑起来，代价是轮换 `JWT_SECRET` 会让所有已登记用户的 TOTP 密钥永久解不开。
 
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -21,7 +21,6 @@ use chacha20poly1305::{
 };
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use tracing::warn;
 
 use crate::{
     config::Config,
@@ -37,37 +36,38 @@ pub struct SecretCipher {
 }
 
 impl SecretCipher {
-    pub fn from_config(config: &Config) -> Result<Self> {
-        let key_bytes = match &config.mfa_encryption_key {
-            Some(encoded) => {
-                let decoded = STANDARD.decode(encoded.trim()).map_err(|e| {
-                    AuthError::ServerError(format!(
-                        "MFA_SECRET_ENCRYPTION_KEY is not valid base64: {e}"
-                    ))
-                })?;
-                if decoded.len() != 32 {
-                    return Err(AuthError::ServerError(format!(
-                        "MFA_SECRET_ENCRYPTION_KEY must decode to 32 bytes, got {}",
-                        decoded.len()
-                    )));
-                }
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&decoded);
-                key
-            }
-            None => {
-                warn!(
-                    "MFA_SECRET_ENCRYPTION_KEY is not set; deriving the MFA encryption key from \
-                     JWT_SECRET. Rotating JWT_SECRET will then make every stored TOTP secret \
-                     undecryptable — configure a dedicated key in production."
-                );
-                derive_key_from_jwt_secret(&config.jwt_secret)
-            }
+    /// `Ok(None)` 表示没有配置专用的 MFA 加密密钥。
+    ///
+    /// 这里**没有**回落路径。原先缺失时会从 `JWT_SECRET` 派生一把出来，带着一行
+    /// 警告继续跑 —— 那是个静默的陷阱：JWT_SECRET 是会被轮换的（泄露、定期轮换、
+    /// 换签名算法都会轮），而轮换它就让每一个已登记用户的 TOTP 密钥永久解不开。
+    /// 故障面貌是「所有开了 MFA 的人同时登不进来」，而运维手上唯一的线索是一条
+    /// 几个月前滚走的启动日志。
+    ///
+    /// 三类密钥（Token 签名 / 凭证加密 / 审计完整性）互不派生，是 `b5` 断言的
+    /// 不变式。宁可让 MFA 明确不可用，也不让它可用但不可轮换。
+    pub fn from_config(config: &Config) -> Result<Option<Self>> {
+        let Some(encoded) = &config.mfa_encryption_key else {
+            return Ok(None);
         };
 
-        Ok(Self {
-            cipher: ChaCha20Poly1305::new(Key::from_slice(&key_bytes)),
-        })
+        let decoded = STANDARD.decode(encoded.trim()).map_err(|e| {
+            AuthError::ServerError(format!(
+                "MFA_SECRET_ENCRYPTION_KEY is not valid base64: {e}"
+            ))
+        })?;
+        if decoded.len() != 32 {
+            return Err(AuthError::ServerError(format!(
+                "MFA_SECRET_ENCRYPTION_KEY must decode to 32 bytes, got {}",
+                decoded.len()
+            )));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&decoded);
+
+        Ok(Some(Self {
+            cipher: ChaCha20Poly1305::new(Key::from_slice(&key)),
+        }))
     }
 
     /// 加密并编码为 `enc.v1.<base64(nonce||ciphertext)>`。
@@ -123,13 +123,6 @@ impl SecretCipher {
     pub fn is_encrypted(stored: &str) -> bool {
         stored.starts_with(CIPHERTEXT_PREFIX)
     }
-}
-
-fn derive_key_from_jwt_secret(jwt_secret: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"soulauth:mfa-secret-encryption:v1:");
-    hasher.update(jwt_secret.as_bytes());
-    hasher.finalize().into()
 }
 
 /// 备用恢复码的哈希（Argon2id）。
@@ -245,15 +238,20 @@ mod tests {
     }
 
     #[test]
-    fn key_derivation_is_deterministic_and_secret_specific() {
-        assert_eq!(
-            derive_key_from_jwt_secret("secret-a"),
-            derive_key_from_jwt_secret("secret-a")
-        );
-        assert_ne!(
-            derive_key_from_jwt_secret("secret-a"),
-            derive_key_from_jwt_secret("secret-b")
-        );
+    fn a_cipher_is_only_built_from_a_dedicated_key() {
+        let mut config = Config::test_default();
+
+        // 没有专用密钥 —— 不构造 cipher，也不从别的钥匙派生一把出来。
+        config.mfa_encryption_key = None;
+        assert!(SecretCipher::from_config(&config).unwrap().is_none());
+
+        // 有专用密钥 —— 正常构造。
+        config.mfa_encryption_key = Some(STANDARD.encode([7u8; 32]));
+        assert!(SecretCipher::from_config(&config).unwrap().is_some());
+
+        // 长度不对 —— 明确报错，而不是截断或补零。
+        config.mfa_encryption_key = Some(STANDARD.encode([7u8; 16]));
+        assert!(SecretCipher::from_config(&config).is_err());
     }
 }
 

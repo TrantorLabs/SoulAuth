@@ -43,7 +43,10 @@ fn match_totp_step(totp: &TOTP, code: &str, now: i64) -> Option<i64> {
 pub struct MfaService {
     db: Database,
     /// TOTP 密钥的静态加密器。
-    cipher: SecretCipher,
+    ///
+    /// `None` 表示没有配置 `MFA_SECRET_ENCRYPTION_KEY`。此时 MFA 不可用 —— 见
+    /// `cipher()`。不在这里回落到别的密钥，理由在 `SecretCipher::from_config`。
+    cipher: Option<SecretCipher>,
 }
 
 impl MfaService {
@@ -52,6 +55,21 @@ impl MfaService {
         Ok(Self {
             db: (*db).clone(),
             cipher: SecretCipher::from_config(&config)?,
+        })
+    }
+
+    /// 取加密器，没配专用密钥时明确拒绝。
+    ///
+    /// 返回 503 而不是 500：这不是一个 bug，是这个实例没有启用 MFA 所需的配置，
+    /// 而调用方（以及看日志的人）需要知道差别。消息里带上要设哪个环境变量 ——
+    /// 否则运维拿到的只是一句「服务不可用」。
+    fn cipher(&self) -> Result<&SecretCipher> {
+        self.cipher.as_ref().ok_or_else(|| {
+            AuthError::ServiceUnavailable(
+                "MFA is not configured on this instance: MFA_SECRET_ENCRYPTION_KEY is not set. \
+                 Generate one with `openssl rand -base64 32` and restart."
+                    .to_string(),
+            )
         })
     }
 
@@ -118,7 +136,7 @@ impl MfaService {
             user_id: user_id.to_string(),
             status: MfaStatus::Pending,
             method: MfaMethod::Totp,
-            totp_secret: Some(self.cipher.encrypt(&secret_str)?),
+            totp_secret: Some(self.cipher()?.encrypt(&secret_str)?),
             backup_codes: hashed_backup_codes,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -329,7 +347,7 @@ impl MfaService {
             .as_ref()
             .ok_or_else(|| AuthError::ServerError("TOTP secret not found".to_string()))?;
 
-        self.cipher.decrypt(stored)
+        self.cipher()?.decrypt(stored)
     }
 
     /// 验证 TOTP 代码，命中时返回它对应的时间步。
@@ -386,7 +404,7 @@ impl MfaService {
         let encrypted = if SecretCipher::is_encrypted(&secret) {
             mfa_config.totp_secret.clone()
         } else {
-            Some(self.cipher.encrypt(&secret)?)
+            Some(self.cipher()?.encrypt(&secret)?)
         };
 
         let query = format!(
@@ -556,7 +574,7 @@ impl MfaService {
         let mut config = mfa_config.clone();
         if let Some(secret) = &config.totp_secret {
             if !SecretCipher::is_encrypted(secret) {
-                config.totp_secret = Some(self.cipher.encrypt(secret)?);
+                config.totp_secret = Some(self.cipher()?.encrypt(secret)?);
             }
         }
         Ok(config)

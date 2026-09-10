@@ -205,8 +205,8 @@ Detection、Key Lifecycle 与 Tamper-evident Audit 建立持续保护。
 以下全部是操作性的内容：怎么跑起来、对外暴露什么、怎么测的，以及哪些地方还不完整。
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
-单元测试 188 项（零外部依赖）· 集成测试 27 组 355 项断言
+axum 0.6 · SurrealDB 3.0 · 71 条路径 / 84 个 operation · 约 2.4 万行
+单元测试 188 项（零外部依赖）· 架构不变式 65 条 · 集成测试 27 组 351 项断言
 ```
 
 ---
@@ -294,7 +294,7 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 
 ## 接口面
 
-72 条路径、85 个 operation。`contracts/openapi.yaml` 是权威清单，
+71 条路径、84 个 operation。`contracts/openapi.yaml` 是权威清单，
 `tests/conformance.rs::j4` 拿它与路由表双向对账；这里给的是它的形状。
 
 | 前缀 | operation | 覆盖 |
@@ -305,10 +305,9 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 | `/api/actors` | 9 | AI 主体注册、加密钥、吊销密钥、领挑战、认证、自省 |
 | `/api/me` | 7 | 本人资料、偏好、活动日志 |
 | `/api/users` | 7 | 管理员读取，以及账号状态与会员等级写入 |
-| `/api/audit` | 5 | 看板、活动摘要、安全指标、安全报告、系统健康 |
+| `/api/audit` | 6 | 看板、活动摘要、安全指标、安全报告、系统健康、哈希链校验 |
 | `/api/security` | 2 | 查询锁定状态、手工解锁（账号或 IP）|
 | `/api/bootstrap` | 1 | 用启动时的一次性令牌建第一个管理员 |
-| `/api/ops` | 1 | 会员总览 |
 | `/.well-known` | 1 | 根路径上的发现文档 |
 | `/health` | 1 | 存活探针（不受限流约束） |
 
@@ -392,7 +391,7 @@ curl -X POST localhost:8080/api/auth/logout -H "Authorization: Bearer $TOKEN"
 
 ```bash
 cargo test              # 单元测试 188 项，零外部依赖
-cargo build && ./tests/integration.sh   # 27 组 355 项断言
+cargo build && ./tests/integration.sh   # 27 组 351 项断言
 ```
 
 **单元测试**管纯逻辑与一致性不变量：权限名与种子数据是否对得上、端点路径
@@ -484,9 +483,9 @@ DEPLOYMENT.zh-CN.md
 
 ## 已知限制
 
-- **一致性测试里有 9 条不变式尚未成立。** 它们标了 `#[ignore]` 而不是删掉，
+- **一致性测试里有 7 条不变式尚未成立。** 它们标了 `#[ignore]` 而不是删掉，
   每条都注明属于哪个 Stage，`cargo test --test conformance -- --ignored` 会列出全部。
-  覆盖的是身份、凭证、审计与领域仓储隔离。
+  覆盖的是统一凭证表、同构认证结果、审计归因与领域仓储隔离。
 - **不含前端。** SoulAuth 是纯 API。邮件链接与 OAuth 后的重定向都指向
   `APP_URL` 下的路径——`/verify-email`、`/reset-password/{token}`、`/login`、
   `/oauth/callback`、`/initialize-password`。前三个可覆盖

@@ -65,8 +65,8 @@ groups:
       - name: MFA_SECRET_ENCRYPTION_KEY
         required: conditional
         default: ""
-        description: "Encryption key for TOTP secrets. Required when APP_URL is not loopback. Without it the key derives from JWT_SECRET — rotating JWT_SECRET then makes every stored TOTP secret undecryptable."
-        description_zh: "TOTP 密钥的加密密钥。APP_URL 非环回时必填。不配则从 JWT_SECRET 派生 —— 轮换 JWT_SECRET 会让所有已存 TOTP 密钥解不开。"
+        description: "Encryption key for TOTP secrets. Required to use MFA at all, and required at startup once APP_URL is not loopback. Without it the MFA endpoints return 503: no key is derived from any other secret, because rotating that other secret would make every stored TOTP secret undecryptable."
+        description_zh: "TOTP 密钥的加密密钥。要使用 MFA 就必须配；APP_URL 非环回时启动即强制。不配时 MFA 端点返回 503 —— 不从任何别的密钥派生，因为那样轮换那把密钥就会让所有已存 TOTP 密钥解不开。"
   - id: service
     keys:
       - name: BIND_ADDR

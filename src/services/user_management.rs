@@ -36,15 +36,33 @@ pub struct UserManagementService {
 }
 
 impl UserManagementService {
+    /// 会员等级是一个**不透明标签**：存下来、原样交回，不解释。
+    ///
+    /// 这里原先把五个具体档位名硬编码成一个 match 分支 —— 那是某个产品的定价
+    /// 表，不是认证服务该知道的事实。后果有两层：接入方想加一个档位就得改
+    /// SoulAuth 并重新部署；而更根本的是，它把商业状态写进了认证内核的判断
+    /// 逻辑里（`a8` 断言禁止的正是这件事）。
+    ///
+    /// 现在只校验形状：大写、限长、限字符集 —— 足以挡住把整段 JSON 或一句 SQL
+    /// 塞进这个字段，而档位词汇表归拥有计费的那个系统。
     fn normalize_membership_level(level: &str) -> Result<String, AuthError> {
-        match level.trim().to_ascii_uppercase().as_str() {
-            "FREE" | "PRO" | "PREMIUM" | "ULTIMATE" | "TEAM" => {
-                Ok(level.trim().to_ascii_uppercase())
-            }
-            _ => Err(AuthError::ValidationError(
-                "Invalid membership level".to_string(),
-            )),
+        let normalized = level.trim().to_ascii_uppercase();
+
+        if normalized.is_empty() || normalized.len() > 32 {
+            return Err(AuthError::ValidationError(
+                "Membership level must be 1 to 32 characters".to_string(),
+            ));
         }
+        if !normalized
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(AuthError::ValidationError(
+                "Membership level may contain only letters, digits, `_` and `-`".to_string(),
+            ));
+        }
+
+        Ok(normalized)
     }
 
     pub fn new(db: Arc<Database>) -> Self {
