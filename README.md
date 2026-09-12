@@ -534,12 +534,6 @@ DEPLOYMENT.zh-CN.md
 
 ## Known limitations
 
-- **One conformance invariant does not hold yet: repositories are not separated by
-  domain.** Persistence runs through a single `Database` handle held directly by every
-  service, so no type owns one domain's writes. The invariant is `#[ignore]`d rather than
-  deleted, and `cargo test --test conformance -- --ignored` prints it. Moving ~180 call
-  sites behind six domain repositories is its own change, not a side effect of another
-  one.
 - **No front-end.** SoulAuth is an API. Mail links and post-OAuth redirects
   point at paths under `APP_URL` — `/verify-email`, `/reset-password/{token}`,
   `/login`, `/oauth/callback`, `/initialize-password`. The first three are

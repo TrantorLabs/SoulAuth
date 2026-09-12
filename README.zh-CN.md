@@ -483,11 +483,6 @@ DEPLOYMENT.zh-CN.md
 
 ## 已知限制
 
-- **还有一条不变式尚未成立：Repository 未按领域分离。** 持久化走的是单一的
-  `Database`，而每个服务都直接持有它，于是没有哪个类型只拥有一个领域的写权限。
-  这条标了 `#[ignore]` 而不是删掉，`cargo test --test conformance -- --ignored`
-  会列出它。把约 180 处调用搬到六个领域入口后面是一次独立的改动，
-  不是别的改动的副产品。
 - **不含前端。** SoulAuth 是纯 API。邮件链接与 OAuth 后的重定向都指向
   `APP_URL` 下的路径——`/verify-email`、`/reset-password/{token}`、`/login`、
   `/oauth/callback`、`/initialize-password`。前三个可覆盖
