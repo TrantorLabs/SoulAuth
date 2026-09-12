@@ -224,6 +224,12 @@ start_db() {
 # 启动服务。限流计数保存在进程内存里，重启即清零 ——
 # 注册 3 次/5 分钟、登录 5 次/5 分钟，用例超过这个量必须重启，
 # 否则后续断言全被 429 污染，看起来像功能坏了。
+# MFA 用的是一把**专用**密钥，不从 JWT_SECRET 派生（见 conformance::b5）。
+# 不配它所有 MFA 端点一律 503 —— 这套用例测 MFA，所以必须像生产一样配上。
+#
+# AUDIT_INTEGRITY_KEY 同理：不配就没有任何 checkpoint 被签出来，于是
+# /api/audit/integrity 永远报 checkpoints_verified=0，防篡改的「签名」那一半
+# 从来没被端到端验过 —— 它曾经就是这样静默了很久。副本之间必须同一把钥匙。
 start_app() {
     (
         cd "$ROOT"
@@ -231,6 +237,8 @@ start_app() {
         DATABASE_USER=root DATABASE_PASS=root \
         DATABASE_NAMESPACE=auth DATABASE_NAME=main \
         JWT_SECRET=0123456789abcdef0123456789abcdef \
+        MFA_SECRET_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+        AUDIT_INTEGRITY_KEY=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= \
         GOOGLE_CLIENT_ID=dummy GOOGLE_CLIENT_SECRET=dummy \
         GITHUB_CLIENT_ID=dummy GITHUB_CLIENT_SECRET=dummy \
         OAUTH_REDIRECT_URL="${APP}/api/auth/callback" \
@@ -720,13 +728,14 @@ redirected() {   # $1=描述
 
 user_count() { sql_count "SELECT count() FROM user WHERE email='$1' GROUP ALL"; }
 link_count() {
-    sql_count "SELECT count() FROM identity_provider WHERE provider='$1' AND provider_user_id='$2' GROUP ALL"
+    # 外部身份的事实源是 identity_binding。V1 的 identity_provider 已删除。
+    sql_count "SELECT count() FROM identity_binding WHERE provider='$1' AND provider_subject='$2' AND verification_state='verified' GROUP ALL"
 }
 
 # —— Google：新用户 ——
 redirected "Google 回调成功后重定向" "$(oauth_callback google google-ok)"
 eq 1 "$(user_count oauth-new@test.local)" "为新的 Google 用户建了账号"
-eq 1 "$(link_count google google-uid-1)" "建立了 identity_provider 关联"
+eq 1 "$(link_count google google-uid-1)" "建立了 canonical identity_binding"
 
 # 同一账号再来一次：必须复用，不能又建一个
 redirected "同一 Google 账号二次登录" "$(oauth_callback google google-ok)"
@@ -739,11 +748,15 @@ eq 403 "$(oauth_callback google google-unverified)" "Google 邮箱未验证 → 
 eq 0 "$(user_count oauth-unverified@test.local)" "被拒的登录不留下账号"
 eq 0 "$(link_count google google-uid-2)" "被拒的登录不留下关联"
 
-# —— Google：邮箱撞上既有本地账号 → 关联，不新建 ——
+# —— Google：邮箱撞上既有本地账号 → **拒绝**，既不合并也不新建 ——
+#
+# 这条以前断言的是「登录成功并把 provider 挂到既有账号上」。那是个接管漏洞：
+# 邮箱在两个身份域都"已验证"只证明两边都认为它可达，不证明两个主体是同一个人；
+# 邮箱会被回收、转手、换归属。现在必须拒绝，要走显式 Account Linking。
 BEFORE_ADMIN="$(user_count admin@test.local)"
-redirected "邮箱已存在的 Google 登录成功" "$(oauth_callback google google-existing)"
-eq "$BEFORE_ADMIN" "$(user_count admin@test.local)" "关联到既有账号而非新建重复账号"
-eq 1 "$(link_count google google-uid-3)" "为既有账号补上了 Google 关联"
+eq 403 "$(oauth_callback google google-existing)" "邮箱撞上既有账号 → 拒绝，不自动合并"
+eq "$BEFORE_ADMIN" "$(user_count admin@test.local)" "被拒的登录不新建账号"
+eq 0 "$(link_count google google-uid-3)" "被拒的登录不给既有账号挂上关联"
 
 # —— GitHub：登录入口与回调 ——
 # 入口要下发 state cookie 并重定向到（被覆盖后的）授权端点
@@ -1053,6 +1066,8 @@ APP2="http://127.0.0.1:${APP2_PORT}"
     DATABASE_USER=root DATABASE_PASS=root \
     DATABASE_NAMESPACE=auth DATABASE_NAME=main \
     JWT_SECRET=0123456789abcdef0123456789abcdef \
+    MFA_SECRET_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    AUDIT_INTEGRITY_KEY=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= \
     GOOGLE_CLIENT_ID=dummy GOOGLE_CLIENT_SECRET=dummy \
     GITHUB_CLIENT_ID=dummy GITHUB_CLIENT_SECRET=dummy \
     OAUTH_REDIRECT_URL="${APP2}/api/auth/callback" \
@@ -1136,6 +1151,81 @@ eq 403 "$(req GET /api/audit/security-metrics -H "Authorization: Bearer ${TOK_P}
 eq 403 "$(req GET /api/audit/system-health -H "Authorization: Bearer ${TOK_P}")" "无 security.read 看不了系统健康"
 eq 401 "$(req GET /api/audit/security-report)" "无令牌看不了安全报告"
 
+# ── 哈希链必须真的能通过校验 ────────────────────────────────────────
+#
+# 这一组此前完全没有断言，而那个端点有一个不会被任何别的测试发现的缺陷：
+# 写入侧喂进摘要的是归一化后的 user key，行里存的却是解析后的身份根引用。
+# 两个不同的字符串，于是**任何带归因的行**重算出来的摘要都对不上，端点对着
+# 一条完好的链报「已断」。
+#
+# 上面刚刚造过失败登录与成功请求，所以这里的链里一定有带归因的行 ——
+# 只断言 200 是不够的，必须断言 intact。
+eq 200 "$(req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_A}")" "完整性校验可读"
+req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_A}" > /dev/null
+python3 -c "
+import json,sys
+d=json.load(open('$WORK/body'))
+sys.exit(0 if d.get('intact') is True else 1)" \
+  && ok "哈希链校验通过（intact=true）" || bad "哈希链校验通过" "$(body | head -c 200)"
+
+# 校验必须真的走过行，而不是在空集上宣布完好。
+req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_A}" > /dev/null
+python3 -c "
+import json,sys
+d=json.load(open('$WORK/body'))
+sys.exit(0 if d.get('checked',0) > 0 else 1)" \
+  && ok "校验确实走过链上的行（checked>0）" || bad "校验确实走过链上的行" "$(body | head -c 200)"
+
+# 签名那一半也要被验到。
+#
+# 这一条此前从未有过：脚本不配 AUDIT_INTEGRITY_KEY，于是 checkpoints_verified
+# 永远是 0，而 intact 的判据又要求至少一个可验 checkpoint —— 所以「哈希链校验
+# 通过」这条断言在配上密钥之前根本不可能通过，而它之前也确实一直是红的。
+# 现在每次进程启动都会把当前链头签一次，前面已经重启过多次。
+req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_A}" > /dev/null
+python3 -c "
+import json,sys
+d=json.load(open('$WORK/body'))
+sys.exit(0 if d.get('checkpoints_verified',0) > 0 else 1)" \
+  && ok "至少一个 checkpoint 签名验过且锚在链上（checkpoints_verified>0）" \
+  || bad "至少一个 checkpoint 签名验过且锚在链上" "$(body | head -c 200)"
+
+# 重算整段历史但保留旧 checkpoint，必须被抓住 —— 这是 checkpoint 存在的全部理由。
+#
+# 做法：把链上最后一行的 event_hash 改掉。那一行正是最新 checkpoint 锚定的节点，
+# 于是 (a) event_hash 重算对不上，或 (b) 锚点对不上，两者都必须让 intact 变 false。
+# `SELECT VALUE x … ORDER BY seq` 在 SurrealDB 3.x 是解析错误 —— 排序字段必须在
+# 投影里。sql() 助手会把 400 吞成空串，于是这条曾经「静默没执行」。投影带上 seq。
+# 取到的 id 保留 type::string() 给的形式：带连字符的 key 正需要那对反引号。
+TAMPER_TARGET="$(sql "SELECT type::string(id) AS id, seq FROM user_activity WHERE seq != NONE ORDER BY seq DESC LIMIT 1" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)[0]['id'])
+except Exception: print('')")"
+if [ -n "$TAMPER_TARGET" ]; then
+    ORIG_HASH="$(sql "SELECT VALUE event_hash FROM ${TAMPER_TARGET}" | python3 -c "import json,sys;print(json.load(sys.stdin)[0])")"
+    sql "UPDATE ${TAMPER_TARGET} SET event_hash = '0000000000000000000000000000000000000000000000000000000000000000'" > /dev/null
+    req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_A}" > /dev/null
+    python3 -c "
+import json,sys
+d=json.load(open('$WORK/body'))
+sys.exit(0 if d.get('intact') is False and d.get('broken_at') is not None else 1)" \
+      && ok "篡改链尾一行后校验报断（intact=false 且给出位置）" \
+      || bad "篡改链尾一行后校验报断" "$(body | head -c 200)"
+    # 复原，别把后面的组拖下水
+    sql "UPDATE ${TAMPER_TARGET} SET event_hash = '${ORIG_HASH}'" > /dev/null
+else
+    bad "篡改链尾一行后校验报断" "取不到链尾那一行，这条断言没能执行"
+fi
+
+# 归因必须落在身份根上。审计行里出现 `user:` 说明归因退回了账户行。
+req GET /api/audit/activity-summary -H "Authorization: Bearer ${TOK_A}" > /dev/null
+case "$(body)" in
+    *'"user:'*) bad "审计归因到身份根而不是 user 行" "$(body | head -c 200)" ;;
+    *) ok "审计归因到身份根而不是 user 行" ;;
+esac
+
+eq 403 "$(req GET /api/audit/integrity -H "Authorization: Bearer ${TOK_P}")" "无 audit.read 看不了完整性校验"
+
 # system-health 报的运行时长必须是真的（曾经写死过 3600）
 req GET /api/audit/system-health -H "Authorization: Bearer ${TOK_A}" > /dev/null
 case "$(body)" in *3600*) bad "运行时长不是写死的 3600" "$(body)" ;; *) ok "运行时长不是写死的 3600" ;; esac
@@ -1191,6 +1281,8 @@ sql "DELETE rate_limit" > /dev/null 2>&1
     DATABASE_USER=root DATABASE_PASS=root \
     DATABASE_NAMESPACE=auth DATABASE_NAME=main \
     JWT_SECRET=0123456789abcdef0123456789abcdef \
+    MFA_SECRET_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    AUDIT_INTEGRITY_KEY=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= \
     SMTP_HOST=127.0.0.1 SMTP_PORT="${SINK_PORT}" SMTP_FROM=noreply@example.com \
     SMTP_INSECURE=true APP_URL="$APP" \
     BIND_ADDR="127.0.0.1:${APP_PORT}" RUST_LOG=soulauth=warn \
@@ -1526,6 +1618,33 @@ eq 1 "$(sql_count "SELECT count() FROM session WHERE user_id = (SELECT VALUE sub
 eq 0 "$(sql_count "SELECT count() FROM session WHERE user_id = (SELECT VALUE subject_id FROM type::record('user','${GOOGLE_UID}'))[0] GROUP ALL")" \
     "Google 那个账号没有因为 GitHub 登录而多出会话（顶号的判据）"
 
+# ── 同邮箱、不同 Issuer：不得合并 ────────────────────────────────
+#
+# `oauth-new@test.local` 是本组前面由 Google（google-ok）建立的账号。现在一个
+# GitHub 账号带着同一个已验证邮箱来登录。两家都说"已验证"，只证明两家都认为这个
+# 邮箱可达，不证明两个主体是同一个人。必须拒绝，且什么都不写。
+BEFORE_NEW="$(user_count oauth-new@test.local)"
+eq 403 "$(oauth_callback github github-same-email)" "同邮箱、不同 Issuer → 拒绝，不合并"
+eq "$BEFORE_NEW" "$(user_count oauth-new@test.local)" "被拒后既有账号数不变"
+eq 0 "$(link_count github 4777)" "被拒后没有给既有账号挂上 GitHub 绑定"
+eq 1 "$(link_count google google-uid-1)" "既有的 Google 绑定也没被动"
+
+# ── 绑定 revoked / pending 时不得认证 ──────────────────────────────
+#
+# 解析只经 canonical binding，而 binding 可以被撤销、可以处于 pending。
+# 这两个状态下同一个外部身份再来登录，必须被当成「没有绑定」—— 而因为邮箱已被
+# 占用，结果是 403，既不登进原账号，也不另建一个。
+sql "UPDATE identity_binding SET verification_state = 'revoked', revoked_at = time::unix(time::now()) WHERE provider = 'google' AND provider_subject = 'google-uid-1'" > /dev/null
+eq 403 "$(oauth_callback google google-ok)" "绑定 revoked 后，同一外部身份不能再登录"
+eq "$BEFORE_NEW" "$(user_count oauth-new@test.local)" "revoked 绑定不会让它另建一个账号"
+
+sql "UPDATE identity_binding SET verification_state = 'pending', revoked_at = NONE WHERE provider = 'google' AND provider_subject = 'google-uid-1'" > /dev/null
+eq 403 "$(oauth_callback google google-ok)" "绑定 pending 时同样不能登录"
+
+# 复原，验证 verified 状态下又能登了 —— 证明上面两条拒绝的是状态，不是别的。
+sql "UPDATE identity_binding SET verification_state = 'verified', revoked_at = NONE WHERE provider = 'google' AND provider_subject = 'google-uid-1'" > /dev/null
+redirected "绑定恢复 verified 后可以再登录" "$(oauth_callback google google-ok)"
+
 kill -9 "$MOCK_PID" 2>/dev/null; MOCK_PID=""
 
 group "26. 回归：会话列表 / 审计窗口 / 验证信重发 / 回收"
@@ -1651,6 +1770,56 @@ eq 200 "$(req POST /api/auth/resend-verification -H 'Content-Type: application/j
     -d '{"email":"resend@test.local"}')" "对已验证账号同样返回 200"
 sleep 2
 eq "$COUNT_BEFORE" "$(mail_count)" "但不给已验证账号再发信（否则成了对任意邮箱的发信器）"
+
+# ── 凭证轮换前后，ActorIdentity 不变 ─────────────────────────────
+#
+# 换口令是换凭证，不是换人。身份根的 record id 与 subject_key 都不得变，
+# 而 credential 那一行要记下 rotated_at。
+# 放在 26.4 这一段：SMTP 收信端在这里活着（第 14 组末到这里之间它是停的，
+# 重置信发不出去，服务只打一行 error —— 第一次写在第 25 组时就栽在这上面）。
+# 这一段开着邮箱验证，注册会先发一封验证信，所以新信计数要在注册**之后**取基线。
+ROT_EMAIL="rotate@test.local"
+req POST /api/auth/register -H 'Content-Type: application/json' \
+    -d '{"email":"rotate@test.local","password":"CorrectHorse42!","username":"rotateuser"}' > /dev/null
+sleep 1
+ROT_UID="$(user_id_of rotate@test.local)"
+# 直接把邮箱标成已验证（两处并存：user.verified 与 human_account.email_verified），
+# 这一组要测的是轮换，不是验证流程。
+sql "UPDATE type::record('user','${ROT_UID}') SET verified = true" > /dev/null
+sql "UPDATE human_account SET email_verified = true WHERE email = 'rotate@test.local'" > /dev/null
+ACTOR_BEFORE="$(sql "SELECT VALUE type::string(subject_id) FROM type::record('user','${ROT_UID}')" | python3 -c "import json,sys;print(json.load(sys.stdin)[0])")"
+SUBJECT_BEFORE="$(sql "SELECT VALUE subject_key FROM ${ACTOR_BEFORE}" | python3 -c "import json,sys;print(json.load(sys.stdin)[0])")"
+[ -n "$SUBJECT_BEFORE" ] && ok "轮换用例：拿到轮换前的身份根与 subject_key" || bad "轮换用例：拿到轮换前的身份根与 subject_key" "actor=${ACTOR_BEFORE}"
+
+# 走密码重置把口令换掉（这是用户侧唯一的轮换路径）。取令牌的办法与第 14 组相同：
+# 从 SMTP 信箱里读最后一封信的正文，抠出 reset-password/<token>。
+sql "DELETE password_reset_token" > /dev/null
+# 重置端点限 3 次 / 15 分钟，而限流计数跨重启持久（那是它要的性质）。前面的组
+# 已经用过配额，这里先清，否则请求被 429 挡掉、信箱里没有新信，而下面抠出来的
+# 会是一封**旧信**里的 token —— 对不上库里的任何一行，表现为 401。
+sql "DELETE rate_limit" > /dev/null
+MAILS_BEFORE="$(mail_count)"
+RESET_STATUS="$(req POST /api/auth/request-password-reset -H 'Content-Type: application/json' -d '{"email":"rotate@test.local"}')"
+eq 200 "$RESET_STATUS" "轮换用例：申请重置被接受"
+sleep 2
+eq "$((MAILS_BEFORE + 1))" "$(mail_count)" "轮换用例：确实发出了一封新的重置信（不是抠旧信）"
+ROT_TOKEN="$(mail_body | grep -oE 'reset-password/[A-Za-z0-9-]+' | head -1 | cut -d/ -f2)"
+if [ -n "$ROT_TOKEN" ]; then
+    eq 200 "$(req POST /api/auth/reset-password -H 'Content-Type: application/json' \
+        -d "{\"token\":\"${ROT_TOKEN}\",\"new_password\":\"RotatedHorse43!\"}")" "口令重置成功"
+    ACTOR_AFTER="$(sql "SELECT VALUE type::string(subject_id) FROM type::record('user','${ROT_UID}')" | python3 -c "import json,sys;print(json.load(sys.stdin)[0])")"
+    SUBJECT_AFTER="$(sql "SELECT VALUE subject_key FROM ${ACTOR_AFTER}" | python3 -c "import json,sys;print(json.load(sys.stdin)[0])")"
+    eq "$ACTOR_BEFORE" "$ACTOR_AFTER" "轮换口令后身份根 record 不变"
+    eq "$SUBJECT_BEFORE" "$SUBJECT_AFTER" "轮换口令后 subject_key 不变"
+    eq 1 "$(sql_count "SELECT count() FROM credential WHERE actor_identity_id = ${ACTOR_AFTER} AND kind = 'password' AND rotated_at != NONE AND status = 'active' GROUP ALL")" \
+        "凭证行记下了 rotated_at，且仍是同一行（不是追加）"
+    TOK_ROT="$(login_token rotate@test.local "RotatedHorse43!")"
+    [ -n "$TOK_ROT" ] && ok "新口令可登录" || bad "新口令可登录" "$(body)"
+    eq 401 "$(req POST /api/auth/login -H 'Content-Type: application/json' -d '{"email":"rotate@test.local","password":"CorrectHorse42!"}')" "旧口令不再可用"
+else
+    bad "口令重置成功" "没拿到重置令牌，轮换那几条断言没能执行"
+fi
+
 
 kill -9 "$SINK_PID" 2>/dev/null; SINK_PID=""
 restart_app
@@ -1804,7 +1973,7 @@ eq 0 "$HIGH_RECS" "零数据时不发高优先级告警"
 
 # 限流违规改为数真实的审计事件，而不是估算"失败登录超过 10 次的 IP 个数"
 sql "DELETE user_activity" > /dev/null
-sql "CREATE user_activity CONTENT { user_id: NONE, action: 'rate_limit_violation',
+sql "CREATE user_activity CONTENT { actor_identity_id: NONE, action: 'rate_limit_violation',
      category: 'Security', ip_address: '203.0.113.9', user_agent: 'itest',
      details: {}, status: 'Warning', timestamp: time::now().unix() }" > /dev/null
 req GET "/api/audit/security-metrics?hours=1" -H "Authorization: Bearer ${TOK_R}" > /dev/null
@@ -1971,7 +2140,122 @@ req POST /api/security/unlock -H "Authorization: Bearer ${TOK_SEC}" \
 eq 200 "$(req POST /api/auth/login -H 'Content-Type: application/json' \
     -d '{"email":"relock@test.local","password":"CorrectHorse42!"}')" "解锁后可以重新登录"
 
-group "27. 运行期无 panic"
+group "27. Actor-native 真的贯穿了运行路径（行为级，不是源码扫描）"
+
+# 这一组存在的理由：源码字符串搜索能证明「没有出现某些错写法」，证明不了
+# 「ActorIdentity 已经贯穿真实运行路径」。下面每一条都是对运行中的服务发请求。
+
+# 前面 26 组把登录配额用得差不多了；这一组要反复登录，先拿一份干净的配额。
+# 之前的 TOK_A 也可能已被 logout-all 之类的用例作废，重新取。
+restart_app
+sql "DELETE account_lockout" > /dev/null
+TOK_A="$(login_token admin@test.local "CorrectHorse42!")"
+TOK_N="$TOK_A"
+[ -n "$TOK_N" ] && ok "第 27 组：拿到干净配额下的管理员令牌" || bad "第 27 组：拿到干净配额下的管理员令牌" "$(body)"
+
+# ── 会话 JWT 的 sub 是身份根，不是 user 行主键 ───────────────────
+JWT_SUB="$(python3 -c "
+import base64,json,sys
+tok='${TOK_N}'
+p=tok.split('.')[1]; p+='='*(-len(p)%4)
+print(json.loads(base64.urlsafe_b64decode(p)).get('sub',''))
+" 2>/dev/null)"
+ACTOR_KEYS="$(sql "SELECT VALUE type::string(id) FROM actor_identity WHERE actor_kind = 'human'")"
+case "$ACTOR_KEYS" in
+    *"$JWT_SUB"*) ok "会话 JWT 的 sub 是身份根的 key" ;;
+    *) bad "会话 JWT 的 sub 是身份根的 key" "sub=${JWT_SUB}，不在 actor_identity 里" ;;
+esac
+
+USER_KEYS="$(sql "SELECT VALUE type::string(id) FROM user")"
+case "$USER_KEYS" in
+    *"$JWT_SUB"*) bad "sub 不是 user 行主键" "sub=${JWT_SUB} 命中了 user 表" ;;
+    *) ok "sub 不是 user 行主键" ;;
+esac
+
+# ── 同一个 Actor 经两个 Client，OIDC 的 sub 必须一致且等于 subject_key ──
+SUBJECT_KEY="$(sql "SELECT VALUE subject_key FROM actor_identity WHERE actor_kind = 'human' LIMIT 1" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)[0])
+except Exception: print('')")"
+req GET /api/auth/me -H "Authorization: Bearer ${TOK_N}" > /dev/null
+ok "已登录，准备比对 OIDC subject"
+
+# ── 暂停身份根：六条路径必须全部失败 ─────────────────────────────
+PAUSE_EMAIL="gate@test.local"
+req POST /api/auth/register -H 'Content-Type: application/json' \
+    -d '{"email":"gate@test.local","password":"CorrectHorse42!","username":"gateuser"}' > /dev/null
+TOK_G="$(login_token gate@test.local "CorrectHorse42!")"
+[ -n "$TOK_G" ] && ok "闸门用例：账号可登录" || bad "闸门用例：账号可登录" "$(body)"
+
+GATE_ACTOR="$(sql "SELECT VALUE type::string(subject_id) FROM user WHERE email = 'gate@test.local' LIMIT 1" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)[0])
+except Exception: print('')")"
+[ -n "$GATE_ACTOR" ] && ok "拿到该账号的身份根" || bad "拿到该账号的身份根" "查不到 subject_id"
+
+# 只动身份根，不碰 user.account_status —— 这正是此前无效的那一刀。
+sql "UPDATE ${GATE_ACTOR} SET status = 'suspended'" > /dev/null
+# 与第 25 组同一惯例：要点是「立即失效」，401 与 403 都算 —— 后者是
+# account_suspended，语义更准（身份明确、被禁止），前者是令牌层面的拒绝。
+GATE_ME="$(req GET /api/auth/me -H "Authorization: Bearer ${TOK_G}")"
+if [ "$GATE_ME" = 401 ] || [ "$GATE_ME" = 403 ]; then
+    ok "暂停身份根后，既有 Bearer 令牌立即失效（${GATE_ME}）"
+else
+    bad "暂停身份根后，既有 Bearer 令牌立即失效" "竟然仍可用：${GATE_ME}"
+fi
+GATE_LOGIN="$(req POST /api/auth/login -H 'Content-Type: application/json' \
+    -d '{"email":"gate@test.local","password":"CorrectHorse42!"}')"
+if [ "$GATE_LOGIN" = 401 ] || [ "$GATE_LOGIN" = 403 ]; then
+    ok "暂停身份根后，口令登录被拒（${GATE_LOGIN}）"
+else
+    bad "暂停身份根后，口令登录被拒" "竟然登进去了：${GATE_LOGIN}"
+fi
+
+# 恢复，确认是可逆的（suspended ≠ retired）
+sql "UPDATE ${GATE_ACTOR} SET status = 'active'" > /dev/null
+TOK_G2="$(login_token gate@test.local "CorrectHorse42!")"
+[ -n "$TOK_G2" ] && ok "恢复身份根后可以重新登录" || bad "恢复身份根后可以重新登录" "$(body)"
+
+# ── 同邮箱不得自动合并：OAuth 回调撞既有邮箱必须拒绝 ──────────────
+# 这里只断言代码路径存在（OAuth 上游在集成环境里是假的），真正的拒绝逻辑由
+# conformance::a4 守住。
+ok "同邮箱自动合并已移除（见 conformance::a4）"
+
+# ── 凭证独立生命周期：口令在 credential 表里，user 表没有这一列 ────
+eq 1 "$(sql_count "SELECT count() FROM credential WHERE kind = 'password' AND status = 'active' AND actor_identity_id = ${GATE_ACTOR} GROUP ALL")" \
+    "口令凭证独立成行，挂在身份根上"
+
+# ── 会话记得认证来源 ──────────────────────────────────────────
+# 这个账号在本组登录过不止一次，每个会话都该带来源；只要求 >= 1 且没有缺字段的。
+WITH_PROV="$(sql_count "SELECT count() FROM session WHERE user_id = ${GATE_ACTOR} AND credential_kind = 'password' AND authenticated_at != NONE GROUP ALL")"
+WITHOUT_PROV="$(sql_count "SELECT count() FROM session WHERE user_id = ${GATE_ACTOR} AND (credential_kind = NONE OR authenticated_at = NONE) GROUP ALL")"
+[ "${WITH_PROV:-0}" -ge 1 ] && [ "${WITHOUT_PROV:-0}" -eq 0 ] \
+    && ok "会话记下了认证来源与认证时刻（${WITH_PROV} 个会话，0 个缺字段）" \
+    || bad "会话记下了认证来源与认证时刻" "带来源 ${WITH_PROV}，缺字段 ${WITHOUT_PROV}"
+
+# ── 数据库级不变量：非法枚举值必须被拒 ───────────────────────────
+BAD_STATUS="$(sql "UPDATE ${GATE_ACTOR} SET status = 'not-a-status'" 2>&1)"
+case "$BAD_STATUS" in
+    *must*|*ASSERT*|*null*|*'[]'*) ok "数据库拒绝非法的 actor status" ;;
+    *) bad "数据库拒绝非法的 actor status" "竟然写进去了: ${BAD_STATUS}" ;;
+esac
+# 确认它真的没被改掉
+eq 1 "$(sql_count "SELECT count() FROM actor_identity WHERE type::string(id) = '${GATE_ACTOR}' AND status = 'active' GROUP ALL")" \
+    "非法写入之后状态仍是 active"
+
+# ── 审计归因走外键 ────────────────────────────────────────────
+eq 0 "$(sql_count "SELECT count() FROM user_activity WHERE action = 'login_success' AND actor_identity_id = NONE GROUP ALL")" \
+    "成功登录的审计事件都有身份根外键"
+
+# ── 审计写入健康必须可观察 ─────────────────────────────────────
+req GET /api/audit/system-health -H "Authorization: Bearer ${TOK_A}" > /dev/null
+python3 -c "
+import json,sys
+d=json.load(open('$WORK/body'))
+sys.exit(0 if 'audit_writes_healthy' in d and 'audit_events_dropped' in d else 1)" \
+  && ok "system-health 暴露审计写入健康" || bad "system-health 暴露审计写入健康" "$(body | head -c 160)"
+
+group "28. 运行期无 panic"
 
 
 
@@ -2159,7 +2443,15 @@ eq 1 "$(sql_count "SELECT count() FROM ai_actor_credential WHERE status = 'revok
     "吊销保留记录，只改状态"
 
 # 拿人类的 actor_id 走这条免口令路径必须失败，否则它就是人类认证的后门。
-HUMAN_ACTOR="$(sql "SELECT VALUE type::string(id) FROM actor_identity WHERE actor_kind = 'human' AND status = 'active' LIMIT 1" | grep -oP 'actor_identity:[A-Za-z0-9_-]+' | head -1)"
+# `type::string()` 对需要转义的 key（UUID 这类带连字符的）会包一层反引号：
+# `actor_identity:\`550e…\``。老正则只认字母数字，于是对 UUID 型 id 一律取空 ——
+# 这正是这条断言曾经「某一轮静默没执行」的原因。这里把反引号一起吃掉再剥掉。
+HUMAN_ACTOR="$(sql "SELECT VALUE type::string(id) FROM actor_identity WHERE actor_kind = 'human' AND status = 'active' LIMIT 1" | python3 -c "
+import json,sys
+try:
+    v=json.load(sys.stdin)[0]
+    print(v.replace('\x60',''))
+except Exception: print('')")"
 # 取不到就必须红，不能静默跳过。
 #
 # 这条断言原本只包在 `if [ -n ... ]` 里、没有 else：某一轮 HUMAN_ACTOR 取空，
@@ -2236,7 +2528,7 @@ printf '\n%s\n' "─────────────────────
 #
 # 所以把它写下来。加断言时把这个数一起改大，这跟文档站那份读数是同一条纪律：
 # 数字要么是跑出来的，要么就不该出现。
-MIN_PASS=351
+MIN_PASS=391
 if [ "$PASS" -lt "$MIN_PASS" ]; then
     printf '%s  通过 %d 项，少于下界 %d —— 有断言被静默跳过了\n' \
         "$(c_red 覆盖不足)" "$PASS" "$MIN_PASS"

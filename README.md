@@ -230,8 +230,8 @@ Everything from here on is operational: how to run it, what it exposes, how it i
 tested, and where it is still incomplete.
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 71 paths / 84 operations · ~24k lines
-188 unit tests (no external dependencies) · 65 architecture invariants · 27 integration groups / 351 assertions
+axum 0.6 · SurrealDB 3.0 · 72 paths / 85 operations · ~24k lines
+196 unit tests (no external dependencies) · 77 architecture invariants · 28 integration groups / 391 assertions
 ```
 
 ---
@@ -323,7 +323,7 @@ OIDC client library.
 
 ## API surface
 
-84 operations over 71 paths. `contracts/openapi.yaml` is the authoritative list and
+85 operations over 72 paths. `contracts/openapi.yaml` is the authoritative list and
 `tests/conformance.rs::j4` holds it against the route table in both directions; this is
 the shape of it.
 
@@ -332,7 +332,7 @@ the shape of it.
 | `/api/auth` | 21 | register, login, admin login, logout, logout-all, sessions, email verification and resend, password reset, first-password initialisation, MFA (5), OAuth entry and callback for two providers |
 | `/api/rbac` | 17 | role and permission CRUD, assignment in both directions, self permission checks |
 | `/api/oidc` | 12 | discovery, JWKS, authorize, token, userinfo, logout, plus the client management API |
-| `/api/actors` | 9 | AI actor registration, credential add and revoke, challenge, authenticate, self-introspection |
+| `/api/actors` | 10 | AI actor registration, credential add and revoke, challenge, authenticate, self-introspection, suspend / retire |
 | `/api/me` | 7 | own profile, preferences and activity log |
 | `/api/users` | 7 | admin reads plus account-status and membership writes |
 | `/api/audit` | 6 | dashboard, activity summary, security metrics, security report, system health, hash-chain verification |
@@ -428,8 +428,8 @@ surprises people during incident response.
 Two layers with different jobs. Neither substitutes for the other.
 
 ```bash
-cargo test              # 188 unit tests, no external dependencies
-cargo build && ./tests/integration.sh   # 27 groups, 351 assertions
+cargo test              # 196 unit tests, no external dependencies
+cargo build && ./tests/integration.sh   # 28 groups, 391 assertions
 ```
 
 **Unit tests** cover pure logic and consistency invariants — permission names
@@ -534,11 +534,12 @@ DEPLOYMENT.zh-CN.md
 
 ## Known limitations
 
-- **The conformance suite carries 7 invariants that do not hold yet.** They are
-  `#[ignore]`d rather than deleted, each labelled with the stage it belongs to, and
-  `cargo test --test conformance -- --ignored` prints the list. They cover the unified
-  credential table, the uniform authentication result, audit attribution and repository
-  separation.
+- **One conformance invariant does not hold yet: repositories are not separated by
+  domain.** Persistence runs through a single `Database` handle held directly by every
+  service, so no type owns one domain's writes. The invariant is `#[ignore]`d rather than
+  deleted, and `cargo test --test conformance -- --ignored` prints it. Moving ~180 call
+  sites behind six domain repositories is its own change, not a side effect of another
+  one.
 - **No front-end.** SoulAuth is an API. Mail links and post-OAuth redirects
   point at paths under `APP_URL` — `/verify-email`, `/reset-password/{token}`,
   `/login`, `/oauth/callback`, `/initialize-password`. The first three are

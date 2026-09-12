@@ -555,15 +555,32 @@ impl OidcService {
 
         let disclose = ClaimDisclosure::from_scope(scope);
 
+        // `sub` 是**身份根的稳定 subject**，不是 user 行的主键。
+        //
+        // 以前这里是 user id，于是 OIDC 的主体与 AIActor 的主体是两种东西，而
+        // 「同一个 Actor 经不同 Client 看到同一个 subject」这条也就没有依据 ——
+        // 它依赖的是一个会随账户实现迁移而变的键。
+        let subject = self.stable_subject_of_user(user).await?;
+
+        // `auth_time` 取**建立该会话的那次认证**，不是 `user.last_login_at`。
+        //
+        // 后者会被之后的任何一次登录更新，于是一个旧会话签出的 ID Token 可能
+        // 携带一个比它自己更晚的认证时间 —— 依赖 `auth_time` 判断重认证的 RP
+        // 会被骗过去。
+        let auth_time = self
+            .authenticated_at_of_session(&sid)
+            .await
+            .unwrap_or(None)
+            .or(user.last_login_at)
+            .unwrap_or(now);
+
         let claims = IdTokenClaims {
             iss: self.issuer(),
-            sub: crate::utils::record_id::record_id_key_to_string(
-                user.id.as_ref().ok_or_else(|| anyhow!("User has no id"))?,
-            ),
+            sub: subject,
             aud: client.client_id.clone(),
             exp,
             iat: now,
-            auth_time: user.last_login_at.unwrap_or(now),
+            auth_time,
             sid,
             nonce: nonce.map(|n| n.to_string()),
             email: disclose.email.then(|| user.email.clone()),
@@ -618,9 +635,9 @@ impl OidcService {
         let disclose = ClaimDisclosure::from_scope(&token.scope);
 
         Ok(UserInfoResponse {
-            sub: crate::utils::record_id::record_id_key_to_string(
-                user.id.as_ref().ok_or_else(|| anyhow!("User has no id"))?,
-            ),
+            // 与 ID Token 同一个主体。两处给出不同的 `sub` 会让 RP 把同一个人
+            // 当成两个人。
+            sub: self.stable_subject_of_user(&user).await?,
             email: disclose.email.then(|| user.email.clone()),
             email_verified: disclose.email.then_some(user.is_email_verified),
             name: None, // 需要从用户档案获取
@@ -768,8 +785,51 @@ impl OidcService {
     /// 所以那不是"一小时的窗口"，是只要接入方持续刷新、停用就永远不会到达。
     ///
     /// 判定共用 [`User::ensure_usable`]，与登录闸门、令牌闸门是同一份。
+    /// 取身份根的稳定 subject。
+    ///
+    /// 多一跳查询换来的是：邮箱改了、用户名改了、凭证轮换了、账户行将来被迁移
+    /// 掉了，`sub` 都不动。
+    async fn stable_subject_of_user(&self, user: &User) -> Result<String> {
+        // 经闸门而不是只查存在：签发 subject 的那一刻，这个主体必须是**有资格
+        // 认证的** —— 一个被暂停的身份根不该还能从 userinfo 换出身份。
+        let user_key = crate::utils::record_id::record_id_key_to_string(
+            user.id.as_ref().ok_or_else(|| anyhow!("User has no id"))?,
+        );
+        let actor = crate::services::identity::IdentityService::new(self.db.clone())
+            .authenticable_actor_of_user(&user_key)
+            .await
+            .map_err(|e| anyhow!("Identity root is not authenticable: {e}"))?;
+        Ok(actor.subject_key().to_string())
+    }
+
+    /// 取建立某个会话的那次认证的时刻。
+    async fn authenticated_at_of_session(&self, session_key: &str) -> Result<Option<i64>> {
+        let rows: Vec<Option<i64>> = self
+            .db
+            .query_take0_vec(
+                "oidc_session_authenticated_at",
+                "SELECT VALUE authenticated_at FROM type::record('session', $key) LIMIT 1",
+                serde_json::json!({ "key": session_key }),
+            )
+            .await
+            .map_err(|e| anyhow!("Failed to read session authentication time: {e}"))?;
+        Ok(rows.into_iter().flatten().next())
+    }
+
+    /// 取账户行，并且**先过身份根闸门**。
+    ///
+    /// 以前这里只看 `user.ensure_usable()`，于是暂停身份根对 refresh、userinfo
+    /// 与授权码兑换都不起作用 —— 旧 access token 照样能换出身份。
     async fn load_active_user(&self, user_id: &str) -> Result<User> {
         let user = self.get_user_by_id(user_id).await?;
+        crate::services::identity::IdentityService::new(self.db.clone())
+            .authenticable_actor_of_user(&crate::utils::record_id::normalize_user_id(
+                &crate::utils::record_id::record_id_key_to_string(
+                    user.id.as_ref().ok_or_else(|| anyhow!("User has no id"))?,
+                ),
+            ))
+            .await
+            .map_err(|e| anyhow!("Identity root is not authenticable: {e}"))?;
         user.ensure_usable()
             .map_err(|e| anyhow!("Account is not active: {e}"))?;
         Ok(user)

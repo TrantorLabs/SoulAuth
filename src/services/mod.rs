@@ -5,6 +5,7 @@ pub mod audit_integrity;
 pub mod audit_logger;
 pub mod auth;
 pub mod auth_cache;
+pub mod credential;
 pub mod database;
 pub mod email;
 pub mod identity;

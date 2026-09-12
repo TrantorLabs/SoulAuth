@@ -1,6 +1,8 @@
 // ── Actor Identity Domain（V2 身份根）────────────────────────────
 pub mod actor_identity;
 pub mod ai_actor;
+pub mod authentication;
+pub mod credential;
 pub mod human_account;
 pub mod identity_binding;
 

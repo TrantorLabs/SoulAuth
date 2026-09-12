@@ -287,6 +287,11 @@ async fn main() -> anyhow::Result<()> {
     // 链自洽如初。checkpoint 用一把**不在数据库里**的私钥签名，重算过的链头
     // 对不上已签发的签名 —— 这是「整段历史被替换」唯一的检出点。
     //
+    // 关闭时要再签一次 checkpoint，把链头锚住 —— 见下面 flush 之后那一步。
+    // `shared_db` 随后会被 move 进路由层的 Extension，这里先留一份。
+    let mut shutdown_signer: Option<audit_integrity::CheckpointSigner> = None;
+    let shutdown_db = shared_db.clone();
+
     // 没配密钥就不签。这在生产环境起不来（`check_production_secrets` 会拒绝），
     // 所以走到这条分支的只有本地开发。
     match config
@@ -296,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         .transpose()
     {
         Ok(Some(signer)) => {
+            shutdown_signer = Some(signer.clone());
             let checkpoint_db = shared_db.clone();
             let checkpoint_chain_id = audit_chain_id.clone();
             tokio::spawn(async move {
@@ -398,6 +404,19 @@ async fn main() -> anyhow::Result<()> {
     // 排空期间进来的请求又会往队列里塞新事件。
     info!("Draining the audit queue");
     audit_logger.flush().await;
+
+    // 排空之后把链头签一次。
+    //
+    // 每小时一签意味着一个进程活不到一小时就退出时，它写下的所有行都没有任何
+    // checkpoint 锚住 —— 而「重写整段未锚定的历史」正是 checkpoint 要防的事。
+    // 关闭是最后一个能签的时机，也是成本最低的时机：队列已空，链头是确定的。
+    if let Some(signer) = shutdown_signer {
+        match audit_integrity::issue_checkpoint(&shutdown_db, &signer, &audit_chain_id).await {
+            Ok(Some(seq)) => info!("Final audit checkpoint issued up to seq {seq}"),
+            Ok(None) => {}
+            Err(e) => error!("Failed to issue the final audit checkpoint: {e}"),
+        }
+    }
     info!("Shutdown complete");
 
     Ok(())

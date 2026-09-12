@@ -66,6 +66,42 @@ jobs:
           echo "最新 stable: $(rustup run stable rustc --version)"
           rustup run stable cargo clippy --all-targets -- -D warnings
 
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 逐项 ignore，每一条都在 SECURITY.md 里有理由。
+      #
+      # 为什么不是 `cargo audit || true`：那等于没有门禁。也不是盲目升级到零告警
+      # —— axum 0.6→0.8 与 jsonwebtoken 8→10 带来的改动风险大于它买到的东西，
+      # 而那两条 advisory 在这个代码库里不可达（理由见 SECURITY.md 的表）。
+      #
+      # 这里要的是第三件事：**新出现的 advisory 不得被旧说明掩盖**。逐项 ignore
+      # 之后，名单之外的任何一条都会让这个 job 变红。
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked --version ^0.21 || cargo audit --version
+          cargo audit \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2025-0009 \
+            --ignore RUSTSEC-2025-0010 \
+            --ignore RUSTSEC-2024-0421 \
+            --ignore RUSTSEC-2026-0235 \
+            --ignore RUSTSEC-2023-0089 \
+            --ignore RUSTSEC-2024-0370
+
+      # 依赖清单随构建一起留档：出了 advisory 才去翻锁文件的历史太晚了。
+      - name: dependency inventory
+        run: |
+          cargo tree --locked --edges normal --prefix depth > dependency-tree.txt
+          wc -l dependency-tree.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-tree
+          path: dependency-tree.txt
+
   integration:
     name: integration suite
     runs-on: ubuntu-latest
@@ -111,6 +147,15 @@ jobs:
       # 一枚指不出真实运行的守卫的徽章，比不加徽章更糟：它看起来像有证据。
       - name: Deployment walkthrough （部署文档的可执行形式）
         run: ./tests/deployment_walkthrough.sh
+
+      # CHANGELOG「Upgrade steps」里每一条 SQL 的可执行形式。
+      #
+      # 集成测试与部署演练都从空库起，而迁移 SQL 操作的是**上一版形状**的数据 ——
+      # CI 里原本不存在这种状态，于是那些 SQL 只能凭语法写。这个脚本第一次跑的时候，
+      # 三段里有两段在 SurrealDB 3.0 上是错的，还抓到「重导 schema 不会让 ASSERT
+      # 在旧列上生效」。SQL 直接从 CHANGELOG.md 提取，文档与脚本不会各说各话。
+      - name: Migration walkthrough （升级步骤的可执行形式）
+        run: ./tests/migration_walkthrough.sh
 
       - name: Dump service log on failure
         if: failure()

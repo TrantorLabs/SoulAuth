@@ -18,6 +18,7 @@ use crate::{
     models::user_activity::{ActivityCategory, ActivityStatus},
     models::{
         account_lockout::LockoutCheckResult,
+        authentication::{AuthenticationResult, CredentialKind},
         mfa::{
             EnableTotpRequest, MfaMethod, MfaStatusResponse, TotpSetupResponse,
             UseBackupCodeRequest, VerifyTotpRequest,
@@ -38,6 +39,7 @@ use crate::{
         audit_logger::{actions, AuditEvent, AuditLogger},
         auth::{AuthService, IssuedSession, LoginOutcome, RequestContext},
         auth_cache::AuthCache,
+        credential::CredentialService,
         database::Database,
         oidc::OidcService,
         rbac::RBACService,
@@ -88,6 +90,40 @@ pub struct MfaLoginVerifyRequest {
 #[derive(Debug, Deserialize)]
 pub struct DisableMfaRequest {
     pub totp_code: String,
+}
+
+/// 把一次认证的事实摊进审计详情。
+///
+/// 记「用什么证明的」而不只是「登录成功了」：同一个主体用口令登录、用备用恢复码
+/// 过 MFA、还是走外部 IdP，在安全上是三件不同的事。归因用身份根地址而不是 user
+/// 行 —— 账户实现可以变，身份根不变。
+fn authentication_details(auth: &AuthenticationResult) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "actor_identity_id".to_string(),
+        json!(auth.actor_identity_id),
+    );
+    details.insert("actor_kind".to_string(), json!(auth.actor_kind.as_str()));
+    details.insert(
+        "credential_kind".to_string(),
+        json!(auth.credential_kind.as_str()),
+    );
+    // 没有标识时**不写这个键**，而不是写一个 null：口令凭证没有标识可言，
+    // 而数据库未必会把 null 存下来 —— 读回来少一个键，摘要就对不上了。
+    if let Some(label) = &auth.credential_label {
+        details.insert("credential_label".to_string(), json!(label));
+    }
+    serde_json::Value::Object(details)
+}
+
+/// 把两个对象合成一个。用于已经带了自己详情（`provider`、`mfa`）的那几处。
+fn merge_details(mut base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            b.insert(k.clone(), v.clone());
+        }
+    }
+    base
 }
 
 pub(crate) fn request_context(
@@ -418,7 +454,8 @@ async fn perform_login(
                     ctx.ip_address.clone(),
                     ctx.user_agent.clone(),
                 )
-                .with_user(issued.response.user.id.clone()),
+                .with_user(issued.response.user.id.clone())
+                .with_details(authentication_details(&issued.authentication)),
             );
             (
                 LoginResponse::Authenticated(issued.response),
@@ -541,7 +578,20 @@ async fn get_current_user(
             .unwrap_or_default(),
     );
 
-    let mut response = UserResponse::from(user.0);
+    // `has_password` 只能问凭证：口令不在账户行上。
+    //
+    // 查不到身份根时报 false 而不是向上抛错 —— 这个端点是「看我自己的资料」，
+    // 不该因为一个附带字段查不到就整个失败；而 false 的后果只是前端显示
+    // 「设置口令」而不是「修改口令」。
+    let has_password = match db.actor_ref_of_user(&user_id).await {
+        Ok(actor) => CredentialService::new(db.clone())
+            .has_password(&actor)
+            .await
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
+    let mut response = UserResponse::of(user.0, has_password);
     response.is_admin = fill_is_admin(&db, &user_id).await;
 
     Ok(Json(response))
@@ -642,6 +692,9 @@ async fn mfa_login_verify(
     let ctx = request_context(&addr, &headers, &config);
     ensure_not_locked_out(&app_state, &challenge.email, &ctx.ip_address).await?;
 
+    // 记下验的是哪一类第二因子。用掉一枚备用恢复码与验一次 TOTP 在安全上不是
+    // 一回事 —— 前者一次性，而且通常意味着用户丢了验证器 —— 审计要分得开。
+    let mut second_factor = CredentialKind::Totp;
     let verification = match (request.totp_code, request.backup_code) {
         (Some(totp_code), _) => {
             auth_service
@@ -650,6 +703,7 @@ async fn mfa_login_verify(
                 .await
         }
         (None, Some(backup_code)) => {
+            second_factor = CredentialKind::BackupCode;
             auth_service
                 .mfa()
                 .use_backup_code(&challenge.user_id, UseBackupCodeRequest { backup_code })
@@ -697,7 +751,7 @@ async fn mfa_login_verify(
     }
 
     let issued = auth_service
-        .complete_mfa_login(&challenge.user_id, &ctx)
+        .complete_mfa_login(&challenge.user_id, &ctx, second_factor)
         .await
         .inspect_err(|e| {
             error!("Failed to complete MFA login: {:?}", e);
@@ -714,7 +768,10 @@ async fn mfa_login_verify(
             ctx.user_agent.clone(),
         )
         .with_user(challenge.user_id.clone())
-        .with_details(json!({ "mfa": true })),
+        .with_details(merge_details(
+            json!({ "mfa": true }),
+            authentication_details(&issued.authentication),
+        )),
     );
 
     login_response(
@@ -735,7 +792,8 @@ async fn initialize_password(
     let updated = auth_service
         .initialize_password(&user_id, &request.password)
         .await?;
-    Ok(Json(updated.into()))
+    // 口令刚在上一行写进 credential，不必再查一次。
+    Ok(Json(UserResponse::of(updated, true)))
 }
 
 async fn request_password_reset(
@@ -765,9 +823,21 @@ async fn reset_password(
     // 改密只清了本站的 session 行。已经发给各 RP 的 OIDC 访问 / 刷新令牌是独立的，
     // 不一起吊销的话，"账号被盗 → 重置密码"根本赶不走攻击者：他从 RP 那一侧的
     // 访问照旧有效，刷新令牌还能一直续期。和 `logout_all` 用同一套处理。
-    if let Err(e) = oidc_service.revoke_all_tokens_for_user(&user_id).await {
-        error!("Failed to revoke OIDC tokens after password reset: {e}");
-    }
+    // 撤销失败必须让这次请求失败。
+    //
+    // 以前只记日志：接口回「密码已重置」，而各 RP 手上的访问与刷新令牌仍然
+    // 有效 —— 「账号被盗 → 重置密码」赶不走攻击者，而用户以为赶走了。
+    oidc_service
+        .revoke_all_tokens_for_user(&user_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to revoke OIDC tokens after password reset: {e}");
+            AuthError::ServerError(
+                "Password was reset but issued tokens could not be revoked; \
+                 retry or revoke them from the admin surface"
+                    .to_string(),
+            )
+        })?;
 
     audit.record(
         AuditEvent::new(
@@ -837,9 +907,17 @@ async fn logout_all(
 
     // "登出所有会话"必须也把已经发出去的 OIDC 访问 / 刷新令牌一起吊销，
     // 否则各 RP 侧的会话还能继续用。
-    if let Err(e) = oidc_service.revoke_all_tokens_for_user(&user_id).await {
-        error!("Failed to revoke OIDC tokens on logout-all: {e}");
-    }
+    oidc_service
+        .revoke_all_tokens_for_user(&user_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to revoke OIDC tokens on logout-all: {e}");
+            AuthError::ServerError(
+                "Sessions were ended but issued tokens could not be revoked; \
+                 retry logout-all"
+                    .to_string(),
+            )
+        })?;
 
     let mut response =
         Json(json!({ "message": "All sessions logged out successfully" })).into_response();
@@ -960,7 +1038,10 @@ async fn google_callback(
             ctx.user_agent.clone(),
         )
         .with_user(issued.response.user.id.clone())
-        .with_details(json!({ "provider": "google" })),
+        .with_details(merge_details(
+            json!({ "provider": "google" }),
+            authentication_details(&issued.authentication),
+        )),
     );
 
     build_oauth_redirect(&config, &headers, &issued, state_return_target)
@@ -994,7 +1075,10 @@ async fn github_callback(
             ctx.user_agent.clone(),
         )
         .with_user(issued.response.user.id.clone())
-        .with_details(json!({ "provider": "github" })),
+        .with_details(merge_details(
+            json!({ "provider": "github" }),
+            authentication_details(&issued.authentication),
+        )),
     );
 
     build_oauth_redirect(&config, &headers, &issued, state_return_target)

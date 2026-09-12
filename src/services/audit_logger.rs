@@ -8,13 +8,19 @@
 //! 这个模块负责在认证链路上补齐埋点。三条硬性约束：
 //!
 //! * **绝不影响主流程**：`record` 不落库，只把事件投进队列就返回；
-//! * **绝不丢事件**：队列由一个专用写入任务消费，写失败会重试，
-//!   进程关闭时先把队列排空再退出（见 `flush`）；
+//! * **尽力不丢，丢了必须可观察**：队列由一个专用写入任务消费，写失败会重试，
+//!   进程关闭时先把队列排空再退出（见 `flush`）。但这**不是**「绝不丢事件」：
+//!   队列满、重试用尽、排空超时这三种情况都会丢。所以丢弃会被计数，并且把审计
+//!   子系统标记为不健康 —— `/api/audit/system-health` 能看到。
+//!
+//!   这里曾经写着「绝不丢事件」。那句话是错的，而错得有代价：读者据此以为
+//!   身份与凭证管理类操作的审计是可靠的，于是不会去做持久化 outbox。
 //! * **绝不记录凭据**：只记 action / 分类 / 状态 / IP / UA 和少量非敏感上下文。
 //!
 //! 这里以前是 `tokio::spawn` 一个一次性任务直接写库：写失败只打一行日志，
 //! 而进程一退出，还没跑起来的那些任务连日志都不会留。
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,7 +90,18 @@ pub struct AuditEvent {
     pub category: ActivityCategory,
     pub status: ActivityStatus,
     /// 用户 ID（不含表名前缀）。登录失败等场景可能为空。
+    /// Human 的账户 id。写入时由它解析出身份根 —— 调用方手上往往只有这个。
     pub user_id: Option<String>,
+
+    /// **已经解析过的**身份根。
+    ///
+    /// AIActor 没有 `user` 行，`with_user` 对它无效：它的认证事件此前只把
+    /// actor id 塞进自由格式的 `details`，于是归因是一个可变的字符串，而不是
+    /// 一条外键 —— 没法按主体稳定地查它的认证历史。
+    ///
+    /// 只接受**已经认证成功后**拿到的身份根。失败事件里的「对方声称自己是谁」
+    /// 属于 `details.claimed_actor_id`，两者不能混：后者来自未经验证的请求参数。
+    pub actor_identity_id: Option<String>,
     pub ip_address: String,
     pub user_agent: String,
     pub details: serde_json::Value,
@@ -103,6 +120,7 @@ impl AuditEvent {
             category,
             status,
             user_id: None,
+            actor_identity_id: None,
             ip_address: ip_address.into(),
             user_agent: user_agent.into(),
             details: json!({}),
@@ -111,6 +129,12 @@ impl AuditEvent {
 
     pub fn with_user(mut self, user_id: impl Into<String>) -> Self {
         self.user_id = Some(user_id.into());
+        self
+    }
+
+    /// 归因到一个**已经解析成功**的身份根。
+    pub fn with_actor(mut self, actor_identity_id: impl Into<String>) -> Self {
+        self.actor_identity_id = Some(actor_identity_id.into());
         self
     }
 
@@ -140,10 +164,14 @@ impl AuditLogger {
                 match msg {
                     Msg::Event(event) => {
                         if head.is_none() {
-                            head = Some(load_chain_head(&db, &chain_id).await);
+                            head = load_chain_head(&db, &chain_id).await;
                         }
-                        let at = head.as_mut().expect("just seeded");
-                        write_with_retry(&db, *event, at, &chain_id).await;
+                        match head.as_mut() {
+                            Some(at) => write_with_retry(&db, *event, at, &chain_id).await,
+                            // 链头读不出来：**不写**。从创世重写会撞唯一索引，
+                            // 并让这个进程此后再也写不进任何事件。
+                            None => mark_dropped("chain head unavailable", event.action),
+                        }
                     }
                     // 排空信号按序到达：能收到它，就说明它前面排队的事件
                     // 都已经写完了。回执发不出去只意味着等待方先走了。
@@ -180,12 +208,16 @@ impl AuditLogger {
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
                     if tx.send(msg).await.is_err() {
-                        error!("Audit event dropped: the writer has stopped");
+                        mark_dropped("writer stopped", "unknown");
                     }
                 });
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                error!("Audit event dropped: the writer has stopped");
+            Err(mpsc::error::TrySendError::Closed(msg)) => {
+                let action = match &msg {
+                    Msg::Event(event) => event.action,
+                    Msg::Flush(_) => "flush",
+                };
+                mark_dropped("writer stopped", action);
             }
         }
     }
@@ -200,6 +232,8 @@ impl AuditLogger {
             return;
         }
         if tokio::time::timeout(FLUSH_TIMEOUT, wait).await.is_err() {
+            // 没排空就退出 —— 剩下的那些事件会丢。标记出来，别让它只是一行 warn。
+            mark_dropped("flush timed out", "flush");
             warn!("Audit queue did not drain within {FLUSH_TIMEOUT:?}");
         }
     }
@@ -221,27 +255,57 @@ struct ChainLink {
     previous_hash: String,
     hash: String,
     timestamp: i64,
-    user_key: String,
+    /// 归因到的身份根，**裸 record key**（不带表名、不带 ⟨⟩）；无归因时是空串。
+    ///
+    /// 为什么是裸 key 而不是 `actor_identity:xxx` 这样的地址形式：摘要两侧必须
+    /// 喂进逐字节相同的串，而地址形式经 `type::string()` 读回来可能带上 ⟨⟩
+    /// （key 需要转义时），也可能不带 —— 那取决于 key 长什么样。把两侧都先用
+    /// `normalize_actor_id` 归一成裸 key，就不依赖这个行为。
+    ///
+    /// 摘要以前喂的是归一化后的 **user** key，而行里存的是解析后的 actor 记录
+    /// —— 两个不同的主体的 key。于是任何带归因的行都被报成「链已断」。
+    actor_key: String,
 }
 
 /// 读当前链头。空表返回创世位置。
 ///
 /// 进程重启后必须接着上一次的 seq 往下写，否则唯一索引会撞，而且链上会出现
 /// 两段互不相接的历史。
-async fn load_chain_head(db: &Database, chain_id: &str) -> ChainHead {
+/// 读当前链头。
+///
+/// `None` 表示**读不出来**（数据库出错），不是「表里没有」—— 后者返回创世位置。
+/// 调用方必须区分这两者：把读失败当成空表会让 seq 从 1 重新开始。
+async fn load_chain_head(db: &Database, chain_id: &str) -> Option<ChainHead> {
     // 只读**本副本自己那条链**的链头。读全表最大 seq 会让两个副本互相接续，
     // 而它们各自在内存里递增，接续出来的号很快就撞。
     let sql = "SELECT seq, event_hash FROM user_activity \
                WHERE chain_id = $chain_id AND seq != NONE ORDER BY seq DESC LIMIT 1";
-    let rows: Vec<serde_json::Value> = db
+    let rows: crate::error::Result<Vec<serde_json::Value>> = db
         .raw_query(
             "audit_chain_head",
             sql,
             serde_json::json!({ "chain_id": chain_id }),
         )
         .await
-        .and_then(|mut r| r.take(0).map_err(Into::into))
-        .unwrap_or_default();
+        .and_then(|mut r| {
+            r.take::<Vec<serde_json::Value>>(0usize).map_err(|e| {
+                crate::error::AuthError::DatabaseError(format!("chain head parse: {e}"))
+            })
+        });
+
+    // **读失败与「表里没有」必须分开。**
+    //
+    // 这里以前是 `.unwrap_or_default()`：一次数据库报错被当成「空表」，于是链头
+    // 回到创世、seq 从 1 重新开始，而库里已经有 1..N —— 唯一索引
+    // `(chain_id, seq)` 把后面每一次写入都挡掉。表现是这个进程从此再也写不进
+    // 任何审计事件，而日志里只有一行读失败。
+    let rows: Vec<serde_json::Value> = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!("Failed to read audit chain head: {e:?}");
+            return None;
+        }
+    };
 
     match rows.first() {
         Some(row) => {
@@ -254,15 +318,37 @@ async fn load_chain_head(db: &Database, chain_id: &str) -> ChainHead {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(audit_integrity::GENESIS_HASH)
                 .to_string();
-            ChainHead { seq, hash }
+            Some(ChainHead { seq, hash })
         }
-        // 读不出来时从创世重新开始，而不是 panic。代价是链上多一处断点，
-        // 校验端点会把它报出来 —— 比服务起不来好。
-        None => ChainHead {
+        // 这条链上确实还没有任何行 —— 全新实例或全新副本，从创世开始是对的。
+        None => Some(ChainHead {
             seq: 0,
             hash: audit_integrity::GENESIS_HASH.to_string(),
-        },
+        }),
     }
+}
+
+/// 审计子系统是否还在可靠地落库。
+///
+/// 一旦丢过事件或读不到链头，它就变成 `false` 并且**不会自己恢复** ——
+/// 恢复需要人看一眼到底丢了什么。`/api/audit/system-health` 暴露它。
+static AUDIT_HEALTHY: AtomicBool = AtomicBool::new(true);
+/// 丢弃的事件数。
+static AUDIT_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// 把审计子系统标记为不健康，并记一次丢弃。
+fn mark_dropped(reason: &str, action: &str) {
+    AUDIT_HEALTHY.store(false, Ordering::Relaxed);
+    let total = AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+    error!("Audit event dropped ({reason}) action={action}; total dropped={total}");
+}
+
+/// 审计落库是否健康，以及累计丢弃数。
+pub fn audit_health() -> (bool, u64) {
+    (
+        AUDIT_HEALTHY.load(Ordering::Relaxed),
+        AUDIT_DROPPED.load(Ordering::Relaxed),
+    )
 }
 
 /// 取 serde 序列化后的字符串值，与落库那一路同源。
@@ -274,6 +360,34 @@ fn serde_string<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+/// 把 user id 解析成身份根的**裸 record key**。
+///
+/// 解析不出来返回空串，与「这条事件没有归因主体」同一种表示。这里**不**向上
+/// 报错：审计写入失败不该阻塞任何东西，而一条归因为空的记录仍然比没有记录好。
+/// 解析失败本身也会被下一次校验看见 —— 那一行的归因是空的。
+///
+/// 这一次多出来的往返发生在审计写入任务里，不在请求路径上：队列把它吸收掉了。
+async fn resolve_actor_key(db: &Database, user_id: Option<&str>) -> String {
+    let Some(raw) = user_id else {
+        return String::new();
+    };
+    let user_key = crate::utils::record_id::normalize_user_id(raw);
+    if user_key.is_empty() {
+        return String::new();
+    }
+
+    db.query_take0_option::<String>(
+        "audit_resolve_actor",
+        "SELECT VALUE type::string(subject_id) FROM type::record('user', $user_key) LIMIT 1",
+        json!({ "user_key": user_key }),
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|addr| crate::utils::record_id::normalize_actor_id(&addr))
+    .unwrap_or_default()
 }
 
 /// 写一条事件，失败重试。
@@ -288,12 +402,20 @@ async fn write_with_retry(db: &Database, event: AuditEvent, head: &mut ChainHead
     // 两个 seq，那会在链上留下一个永远补不上的空号。
     let seq = head.seq + 1;
     let timestamp = Utc::now().timestamp();
-    let details_json = serde_json::to_string(&event.details).unwrap_or_else(|_| "{}".to_string());
-    let user_key = event
-        .user_id
-        .as_deref()
-        .map(crate::utils::record_id::normalize_user_id)
-        .unwrap_or_default();
+    // 规范化而不是直接 to_string：键顺序与 null 在两侧不保证一致，
+    // 详见 `audit_integrity::canonical_json`。
+    let details_json = audit_integrity::canonical_json(&event.details);
+    // 先把 user id 解析成身份根地址，**然后**再算摘要。
+    //
+    // 顺序是这条链能不能被验证的关键：行里存的是身份根引用，而校验端点只能
+    // 读到行里的东西。在解析之前算摘要，等于对一个不在行里的值签名。
+    // 已经解析过的身份根优先；只有拿不到时才从 user 行解析。
+    //
+    // 顺序重要：AIActor 的事件没有 user 行，而 Human 的调用方通常只有 user id。
+    let actor_key = match event.actor_identity_id.as_deref() {
+        Some(raw) => crate::utils::record_id::normalize_actor_id(raw),
+        None => resolve_actor_key(db, event.user_id.as_deref()).await,
+    };
     let hash = audit_integrity::event_hash(&audit_integrity::DigestInput {
         chain_id,
         seq,
@@ -301,7 +423,7 @@ async fn write_with_retry(db: &Database, event: AuditEvent, head: &mut ChainHead
         action: event.action,
         category: &serde_string(&event.category),
         status: &serde_string(&event.status),
-        user_id: &user_key,
+        actor_identity_id: &actor_key,
         ip_address: &event.ip_address,
         user_agent: &event.user_agent,
         details_json: &details_json,
@@ -312,7 +434,7 @@ async fn write_with_retry(db: &Database, event: AuditEvent, head: &mut ChainHead
         previous_hash: head.hash.clone(),
         hash: hash.clone(),
         timestamp,
-        user_key,
+        actor_key,
     };
 
     for attempt in 1..=WRITE_ATTEMPTS {
@@ -336,6 +458,7 @@ async fn write_with_retry(db: &Database, event: AuditEvent, head: &mut ChainHead
         "Failed to write audit event after {WRITE_ATTEMPTS} attempts: {}",
         last_err.map(|e| e.to_string()).unwrap_or_default()
     );
+    mark_dropped("write retries exhausted", action);
 }
 
 async fn write_event(
@@ -344,15 +467,18 @@ async fn write_event(
     link: &ChainLink,
     chain_id: &str,
 ) -> crate::error::Result<()> {
-    // user_id 是 `option<record<actor_identity>>`：没有对应主体时写 NONE。
+    // `actor_identity_id` 是 `option<record<actor_identity>>`：没有归因主体时写 NONE。
     //
-    // 审计归因到**身份根**而不是 user 行 —— 这也是 GA-06 要求的方向：
-    // 归因主体要跨 user 行的生命周期保持稳定。传进来的仍是 user id，
-    // 所以这里用子查询把它解析成 actor ref，与会话查询同一种写法。
-    let sql = if event.user_id.is_some() {
+    // 审计归因到**身份根**而不是 user 行 —— 归因主体要跨 user 行的生命周期保持
+    // 稳定。列名曾经叫 `user_id`，而类型一直是 `record<actor_identity>`：指向是
+    // 对的，名字在说谎（`f1` 断言的正是这个）。
+    //
+    // 解析在算摘要之前就做完了，所以这里写的是 `link.actor_address` 本身，
+    // 不再在 SQL 里现算 —— 在 SQL 里现算就会出现「签的值」与「存的值」不同。
+    let sql = if !link.actor_key.is_empty() {
         r#"
             CREATE user_activity CONTENT {
-                user_id: (SELECT VALUE subject_id FROM type::record('user', $user_key))[0],
+                actor_identity_id: type::record('actor_identity', $actor_key),
                 action: $action,
                 category: $category,
                 ip_address: $ip_address,
@@ -369,7 +495,7 @@ async fn write_event(
     } else {
         r#"
             CREATE user_activity CONTENT {
-                user_id: NONE,
+                actor_identity_id: NONE,
                 action: $action,
                 category: $category,
                 ip_address: $ip_address,
@@ -392,7 +518,7 @@ async fn write_event(
             // 这些值全部取自 `link`，而 `link` 里的每一项都进过摘要。
             // 若在这里另算一遍（例如再调一次 `Utc::now()`），落库的事实就会与
             // 被签名的事实错开，链当场就是断的。
-            "user_key": link.user_key,
+            "actor_key": link.actor_key,
             "action": event.action,
             "category": event.category,
             "status": event.status,

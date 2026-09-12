@@ -227,14 +227,14 @@ impl AuditService {
         // 2. Login attempts from unusual locations
         // 3. Multiple account access attempts
 
-        // `user_id` 必须投影成字符串。它是 `record<actor_identity>`，SDK 转不成
+        // `actor_identity_id` 必须投影成字符串。它是 `record<actor_identity>`，SDK 转不成
         // `serde_json::Value`，整个结果集会解析失败 —— 而这个函数同时喂给
         // `/api/audit/security-report` 与 `/security-metrics` 两个端点。
         //
         // 这条以前被 `.take(0).unwrap_or_default()` 吞掉，两个端点一直返回
         // 200 加一份空的可疑活动列表。同文件里 `get_top_active_users` 的同类
-        // 查询从一开始就写的是 `type::string(user_id)`，只有这里漏了。
-        let query = "SELECT ip_address, type::string(user_id) AS user_id, action, count() as count, math::min(timestamp) as first_seen, math::max(timestamp) as last_seen FROM user_activity WHERE timestamp >= $start_time AND (action = 'login_failed' OR action = 'permission_denied') GROUP BY ip_address, user_id, action ORDER BY count DESC LIMIT 50";
+        // 查询从一开始就写的是 `type::string(...)`，只有这里漏了。
+        let query = "SELECT ip_address, type::string(actor_identity_id) AS actor_identity_id, action, count() as count, math::min(timestamp) as first_seen, math::max(timestamp) as last_seen FROM user_activity WHERE timestamp >= $start_time AND (action = 'login_failed' OR action = 'permission_denied') GROUP BY ip_address, actor_identity_id, action ORDER BY count DESC LIMIT 50";
 
         let mut result = self
             .db
@@ -253,7 +253,7 @@ impl AuditService {
         let mut suspicious = Vec::new();
         for r in &activity_rows {
             let ip_address = row::str_field(r, "ip_address");
-            let user_id = row::opt_str_field(r, "user_id");
+            let actor_identity_id = row::opt_str_field(r, "actor_identity_id");
             let activity_type = row::str_field(r, "action");
             let count = row::i64_field(r, "count");
             let first_seen_ts = row::i64_field(r, "first_seen");
@@ -266,7 +266,7 @@ impl AuditService {
             let last_seen = DateTime::from_timestamp(last_seen_ts, 0).unwrap_or_else(Utc::now);
 
             suspicious.push(SuspiciousActivity {
-                user_id,
+                actor_identity_id,
                 ip_address,
                 activity_type,
                 count,
@@ -363,7 +363,7 @@ impl AuditService {
         start_time: DateTime<Utc>,
     ) -> ApiResult<Vec<UserActivityMetric>> {
         // SurrealDB 3.x: avoid JOIN; aggregate first, then resolve user email map.
-        let query = "SELECT type::string(user_id) as user_id, count() as activity_count, math::max(timestamp) as last_activity FROM user_activity WHERE timestamp >= $start_time AND user_id != NONE GROUP BY user_id ORDER BY activity_count DESC LIMIT 20";
+        let query = "SELECT type::string(actor_identity_id) as actor_identity_id, count() as activity_count, math::max(timestamp) as last_activity FROM user_activity WHERE timestamp >= $start_time AND actor_identity_id != NONE GROUP BY actor_identity_id ORDER BY activity_count DESC LIMIT 20";
 
         let mut result = self
             .db
@@ -380,19 +380,19 @@ impl AuditService {
         let rows = take_rows(&mut result, "top users")?;
 
         let mut compact_rows: Vec<(String, i64, i64)> = Vec::new();
-        let mut user_keys: Vec<String> = Vec::new();
+        let mut actor_addresses: Vec<String> = Vec::new();
         for row in rows {
             let obj = match row {
                 Value::Object(o) => o,
                 _ => continue,
             };
 
-            let user_id = obj
-                .get("user_id")
+            let actor_identity_id = obj
+                .get("actor_identity_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            if user_id.is_empty() {
+            if actor_identity_id.is_empty() {
                 continue;
             }
 
@@ -405,22 +405,27 @@ impl AuditService {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            // Normalize to `user:<uuid>` for lookup in user table.
-            let normalized = user_id
-                .trim_start_matches("user:")
-                .trim_matches(|c| c == '⟨' || c == '⟩');
-            user_keys.push(format!("user:{}", normalized));
-            compact_rows.push((user_id, activity_count, last_activity_ts));
+            // 审计行归因到**身份根**，而邮箱在账户行上。所以查的是
+            // `user.subject_id`，不是 `user.id`。
+            //
+            // 这里原先把审计行里的值按 `user:<uuid>` 去查 `user.id` —— 而那个值
+            // 是 `actor_identity:<uuid>`，两个 uuid 本来就不是同一个。结果是
+            // 邮箱**永远是空字符串**，而端点照常返回 200。
+            actor_addresses.push(actor_identity_id.clone());
+            compact_rows.push((actor_identity_id, activity_count, last_activity_ts));
         }
 
         let mut email_map: HashMap<String, String> = HashMap::new();
-        if !user_keys.is_empty() {
-            let user_query = "SELECT type::string(id) as id, email FROM user WHERE type::string(id) IN $user_ids";
+        if !actor_addresses.is_empty() {
+            // `subject_id != NONE` 必须在前：它是 option，而对 NONE 调
+            // `type::string()` 会让整条语句失败 —— 表现是 security-report 返回 500。
+            let user_query = "SELECT type::string(subject_id) as actor, email FROM user \
+                              WHERE subject_id != NONE AND type::string(subject_id) IN $actors";
             let mut user_result = self
                 .db
                 .client
                 .query(user_query)
-                .bind(("user_ids", user_keys))
+                .bind(("actors", actor_addresses))
                 .await
                 .and_then(|response| response.check())
                 .map_err(|e| {
@@ -434,8 +439,8 @@ impl AuditService {
                     Value::Object(o) => o,
                     _ => continue,
                 };
-                let id = obj
-                    .get("id")
+                let actor = obj
+                    .get("actor")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -444,25 +449,24 @@ impl AuditService {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if !id.is_empty() {
-                    email_map.insert(id, email);
+                if !actor.is_empty() {
+                    email_map.insert(actor, email);
                 }
             }
         }
 
         let users = compact_rows
             .into_iter()
-            .map(|(user_id, activity_count, last_activity_ts)| {
-                let normalized = user_id
-                    .trim_start_matches("user:")
-                    .trim_matches(|c| c == '⟨' || c == '⟩');
-                let lookup_id = format!("user:{}", normalized);
-                let email = email_map.get(&lookup_id).cloned().unwrap_or_default();
+            .map(|(actor_identity_id, activity_count, last_activity_ts)| {
+                let email = email_map
+                    .get(&actor_identity_id)
+                    .cloned()
+                    .unwrap_or_default();
                 let last_activity =
                     DateTime::from_timestamp(last_activity_ts, 0).unwrap_or_else(Utc::now);
 
                 UserActivityMetric {
-                    user_id,
+                    actor_identity_id,
                     email,
                     activity_count,
                     last_activity,
@@ -683,7 +687,7 @@ impl AuditService {
     }
 
     async fn get_active_users_count(&self, start_time: DateTime<Utc>) -> ApiResult<i64> {
-        let query = "SELECT type::string(user_id) as user_id FROM user_activity WHERE timestamp >= $start_time AND user_id != NONE GROUP BY user_id";
+        let query = "SELECT type::string(actor_identity_id) as actor_identity_id FROM user_activity WHERE timestamp >= $start_time AND actor_identity_id != NONE GROUP BY actor_identity_id";
         let rows: Vec<Value> = self
             .db
             .query_take0_vec(

@@ -9,7 +9,12 @@ use surrealdb::types::SurrealValue;
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue)]
 pub struct UserProfile {
     pub id: Option<Thing>,
-    pub user_id: Thing,
+    /// 指向身份根 `actor_identity`。
+    ///
+    /// 这个字段曾经叫 `user_id`，而类型一直是 `record<actor_identity>` ——
+    /// 指向是对的，名字在说谎。Profile 描述 Actor，不是 Actor 本身：
+    /// Display Name、Avatar、Locale 变来变去都不改变身份（见 `h2`）。
+    pub actor_identity_id: Thing,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub display_name: Option<String>,
@@ -56,7 +61,7 @@ pub struct UpdateUserProfileRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserProfileResponse {
     pub id: String,
-    pub user_id: String,
+    pub actor_identity_id: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub display_name: Option<String>,
@@ -79,7 +84,9 @@ impl From<UserProfile> for UserProfileResponse {
                 .id
                 .map(|id| crate::utils::record_id::record_id_key_to_string(&id))
                 .unwrap_or_default(),
-            user_id: crate::utils::record_id::record_id_key_to_string(&profile.user_id),
+            actor_identity_id: crate::utils::record_id::record_id_key_to_string(
+                &profile.actor_identity_id,
+            ),
             first_name: profile.first_name,
             last_name: profile.last_name,
             display_name: profile.display_name,

@@ -24,7 +24,6 @@
 //!
 //! 当前它们仍暂留在 V1 `user` 表上，Stage 2 收口到 Credential Domain。
 
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId as Thing;
 use surrealdb_types::SurrealValue;
@@ -52,25 +51,4 @@ pub struct HumanAccount {
 
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-impl HumanAccount {
-    pub fn new(
-        actor_identity_id: Thing,
-        email: impl Into<String>,
-        username: impl Into<String>,
-        username_normalized: impl Into<String>,
-    ) -> Self {
-        let now = Utc::now().timestamp();
-        Self {
-            id: None,
-            actor_identity_id,
-            email: email.into(),
-            username: username.into(),
-            username_normalized: username_normalized.into(),
-            email_verified: false,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 }

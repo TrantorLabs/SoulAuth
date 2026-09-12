@@ -54,6 +54,12 @@
       "response": "Value",
       "status_only": false
     },
+    "actors_set_status": {
+      "query": null,
+      "request": "SetActorStatusRequest",
+      "response": "Value",
+      "status_only": false
+    },
     "audit_active_user_rate": {
       "query": null,
       "request": null,
@@ -192,22 +198,34 @@
       "response": null,
       "status_only": false
     },
+    "audit_verify_integrity": {
+      "query": null,
+      "request": null,
+      "response": "AuditIntegrityReport",
+      "status_only": false
+    },
     "auth_admin_login": {
       "query": null,
       "request": "LoginRequest",
-      "response": "Value",
+      "response": null,
       "status_only": false
     },
     "auth_ensure_admin_console_access": {
       "query": null,
       "request": null,
-      "response": "Value",
+      "response": null,
       "status_only": false
     },
     "auth_ensure_not_locked_out": {
       "query": null,
       "request": null,
-      "response": "Value",
+      "response": null,
+      "status_only": false
+    },
+    "auth_fill_is_admin": {
+      "query": null,
+      "request": null,
+      "response": null,
       "status_only": false
     },
     "auth_get_current_user": {
@@ -261,7 +279,7 @@
     "auth_login": {
       "query": null,
       "request": "LoginRequest",
-      "response": "Value",
+      "response": null,
       "status_only": false
     },
     "auth_logout": {
@@ -291,7 +309,7 @@
     "auth_mfa_login_verify": {
       "query": null,
       "request": "MfaLoginVerifyRequest",
-      "response": "Value",
+      "response": null,
       "status_only": false
     },
     "auth_mfa_setup": {
@@ -309,7 +327,7 @@
     "auth_perform_login": {
       "query": null,
       "request": null,
-      "response": "Value",
+      "response": null,
       "status_only": false
     },
     "auth_register": {
@@ -352,6 +370,30 @@
       "query": null,
       "request": "BootstrapAdminRequest",
       "response": "BootstrapAdminResponse",
+      "status_only": false
+    },
+    "bootstrap_claim_bootstrap": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "bootstrap_finish_bootstrap": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "bootstrap_mark_role_pending": {
+      "query": null,
+      "request": null,
+      "response": null,
+      "status_only": false
+    },
+    "bootstrap_release_bootstrap": {
+      "query": null,
+      "request": null,
+      "response": null,
       "status_only": false
     },
     "oidc_authorize": {
@@ -454,12 +496,6 @@
       "query": null,
       "request": null,
       "response": null,
-      "status_only": false
-    },
-    "ops_get_membership_overview": {
-      "query": null,
-      "request": null,
-      "response": "Value",
       "status_only": false
     },
     "rbac_assign_permission_to_role": {
@@ -905,6 +941,46 @@
         "top_activities",
         "login_trends",
         "security_trends"
+      ],
+      "type": "object"
+    },
+    "AuditIntegrityReport": {
+      "properties": {
+        "broken_at": {
+          "type": "integer"
+        },
+        "broken_chain": {
+          "type": "string"
+        },
+        "broken_reason": {
+          "type": "string"
+        },
+        "chains": {
+          "type": "integer"
+        },
+        "checked": {
+          "type": "integer"
+        },
+        "checkpoints": {
+          "type": "integer"
+        },
+        "checkpoints_verified": {
+          "type": "integer"
+        },
+        "intact": {
+          "type": "boolean"
+        },
+        "unchained": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intact",
+        "checked",
+        "unchained",
+        "chains",
+        "checkpoints",
+        "checkpoints_verified"
       ],
       "type": "object"
     },
@@ -2414,6 +2490,17 @@
       ],
       "type": "object"
     },
+    "SetActorStatusRequest": {
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
     "StatusMetric": {
       "properties": {
         "count": {
@@ -2438,6 +2525,9 @@
         "activity_type": {
           "type": "string"
         },
+        "actor_identity_id": {
+          "type": "string"
+        },
         "count": {
           "type": "integer"
         },
@@ -2452,9 +2542,6 @@
         },
         "risk_score": {
           "type": "integer"
-        },
-        "user_id": {
-          "type": "string"
         }
       },
       "required": [
@@ -2471,6 +2558,12 @@
       "properties": {
         "active_sessions_count": {
           "type": "integer"
+        },
+        "audit_events_dropped": {
+          "type": "integer"
+        },
+        "audit_writes_healthy": {
+          "type": "boolean"
         },
         "database_status": {
           "$ref": "#/components/schemas/DatabaseHealth"
@@ -2494,7 +2587,9 @@
         "active_sessions_count",
         "pending_lockouts",
         "memory_usage",
-        "uptime_seconds"
+        "uptime_seconds",
+        "audit_writes_healthy",
+        "audit_events_dropped"
       ],
       "type": "object"
     },
@@ -2675,18 +2770,18 @@
         "activity_count": {
           "type": "integer"
         },
+        "actor_identity_id": {
+          "type": "string"
+        },
         "email": {
           "type": "string"
         },
         "last_activity": {
           "type": "object"
-        },
-        "user_id": {
-          "type": "string"
         }
       },
       "required": [
-        "user_id",
+        "actor_identity_id",
         "email",
         "activity_count",
         "last_activity"
@@ -2696,6 +2791,9 @@
     "UserActivityResponse": {
       "properties": {
         "action": {
+          "type": "string"
+        },
+        "actor_identity_id": {
           "type": "string"
         },
         "category": {
@@ -2718,14 +2816,11 @@
         },
         "user_agent": {
           "type": "string"
-        },
-        "user_id": {
-          "type": "string"
         }
       },
       "required": [
         "id",
-        "user_id",
+        "actor_identity_id",
         "action",
         "category",
         "ip_address",
@@ -2911,6 +3006,9 @@
     },
     "UserProfileResponse": {
       "properties": {
+        "actor_identity_id": {
+          "type": "string"
+        },
         "avatar_url": {
           "type": "string"
         },
@@ -2950,16 +3048,13 @@
         "updated_at": {
           "type": "object"
         },
-        "user_id": {
-          "type": "string"
-        },
         "website": {
           "type": "string"
         }
       },
       "required": [
         "id",
-        "user_id",
+        "actor_identity_id",
         "created_at",
         "updated_at"
       ],

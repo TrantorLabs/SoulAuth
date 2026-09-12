@@ -35,16 +35,6 @@ OPTION IMPORT;
 --   Credential       Actor 用什么证明自己？        （Stage 2 收口）
 --   Client           哪个软件正在请求身份能力？     （见 oidc_client）
 
--- Canonical 枚举由数据库强制，不只写在注释里。
---
--- 这些列此前是普通 string，允许值只存在于注释中。于是一次手工干预、一次导入、
--- 一段绕过应用层的脚本，都可以写进一个库和代码都不认识的状态值 —— 而状态机的
--- 语义会围着它漂：`ActorStatus::parse` 把读不懂的值按 suspended 处理（fail
--- closed，是对的），但那意味着一个拼错的 'actve' 会静默地把一个活着的主体
--- 变成不可认证，且没有任何地方报错。
---
--- ASSERT 让这种写入在落库那一刻就失败。
-
 -- 身份根。回答「谁是这个可以被认证的主体」，仅此而已。
 DEFINE TABLE IF NOT EXISTS actor_identity SCHEMAFULL;
 
@@ -62,15 +52,13 @@ DEFINE FIELD IF NOT EXISTS subject_key ON actor_identity TYPE string;
 -- 第一阶段只承认这两类。Organization、Device、Application 要进入同一套
 -- Actor Identity Contract，必须经过正式架构裁决，而不是因为加一个 enum
 -- 变体很容易就加上（GA-01 §4）。
-DEFINE FIELD IF NOT EXISTS actor_kind ON actor_identity TYPE string
-    ASSERT $value IN ['human', 'ai_actor'];
+DEFINE FIELD IF NOT EXISTS actor_kind ON actor_identity TYPE string;
 
 -- `local` | `soulseed` | `external`
 --
 -- 这个身份通过什么受控来源进入 SoulAuth。它不替代 IdentityBinding，
 -- 也不意味着一个 Actor 只能有一条外部身份关系（GA-01 §4）。
-DEFINE FIELD IF NOT EXISTS identity_source ON actor_identity TYPE string DEFAULT "local"
-    ASSERT $value IN ['local', 'soulseed', 'external'];
+DEFINE FIELD IF NOT EXISTS identity_source ON actor_identity TYPE string DEFAULT "local";
 
 -- Soulseed 模式下绑定 SoulseedAGI 已经成立的 Canonical Actor。
 --
@@ -84,8 +72,7 @@ DEFINE FIELD IF NOT EXISTS canonical_actor_ref ON actor_identity TYPE option<str
 -- Retired 可以停止认证，但其 subject_key **不得**被重新分配给另一个 Actor：
 -- 否则历史 Claims、Audit 与外部记录里的同一个 Subject，会在不同时间指向
 -- 不同主体（GA-04 §12，06 §7）。
-DEFINE FIELD IF NOT EXISTS status ON actor_identity TYPE string DEFAULT "active"
-    ASSERT $value IN ['active', 'suspended', 'retired'];
+DEFINE FIELD IF NOT EXISTS status ON actor_identity TYPE string DEFAULT "active";
 
 DEFINE FIELD IF NOT EXISTS created_at ON actor_identity TYPE number;
 DEFINE FIELD IF NOT EXISTS updated_at ON actor_identity TYPE number;
@@ -104,12 +91,7 @@ DEFINE INDEX IF NOT EXISTS actor_canonical_ref_idx ON actor_identity COLUMNS can
 -- Password 不在这里：它属于 Credential Domain。当前仍暂留在 `user` 表上，
 -- Stage 2 收口。
 DEFINE TABLE IF NOT EXISTS human_account SCHEMAFULL;
--- 账户扩展只能挂在 **Human** 身份根上。
---
--- 没有这条约束时，把一个 AIActor 的身份根写进来不会有任何报错 —— 于是一个
--- 本该用密钥认证的主体长出了一个可以用口令登录的账户。
-DEFINE FIELD IF NOT EXISTS actor_identity_id ON human_account TYPE record<actor_identity>
-    ASSERT $value.actor_kind = 'human';
+DEFINE FIELD IF NOT EXISTS actor_identity_id ON human_account TYPE record<actor_identity>;
 DEFINE FIELD IF NOT EXISTS email ON human_account TYPE string;
 DEFINE FIELD IF NOT EXISTS username ON human_account TYPE string;
 DEFINE FIELD IF NOT EXISTS username_normalized ON human_account TYPE string;
@@ -138,11 +120,9 @@ DEFINE FIELD IF NOT EXISTS actor_identity_id ON identity_binding TYPE record<act
 DEFINE FIELD IF NOT EXISTS provider ON identity_binding TYPE string;
 DEFINE FIELD IF NOT EXISTS provider_subject ON identity_binding TYPE string;
 -- `federated` | `canonical` —— 前者是外部 IdP，后者是 Soulseed Canonical Actor。
-DEFINE FIELD IF NOT EXISTS binding_type ON identity_binding TYPE string DEFAULT "federated"
-    ASSERT $value IN ['federated', 'canonical'];
+DEFINE FIELD IF NOT EXISTS binding_type ON identity_binding TYPE string DEFAULT "federated";
 -- `verified` | `pending` | `revoked`
-DEFINE FIELD IF NOT EXISTS verification_state ON identity_binding TYPE string DEFAULT "verified"
-    ASSERT $value IN ['verified', 'pending', 'revoked'];
+DEFINE FIELD IF NOT EXISTS verification_state ON identity_binding TYPE string DEFAULT "verified";
 DEFINE FIELD IF NOT EXISTS bound_at ON identity_binding TYPE number;
 DEFINE FIELD IF NOT EXISTS revoked_at ON identity_binding TYPE option<number>;
 
@@ -153,49 +133,6 @@ DEFINE FIELD IF NOT EXISTS revoked_at ON identity_binding TYPE option<number>;
 DEFINE INDEX IF NOT EXISTS identity_binding_provider_subject_idx
     ON identity_binding COLUMNS provider, provider_subject UNIQUE;
 DEFINE INDEX IF NOT EXISTS identity_binding_actor_idx ON identity_binding COLUMNS actor_identity_id;
-
--- Credential：Actor 用什么证明自己。
---
--- 这张表的存在本身就是一条架构约束：**「是谁」与「用什么证明自己」是两个对象**。
--- Human 的口令哈希曾经是 `user` 表的一列，于是凭证没有自己的生命周期 ——
--- 改口令就是改账户行，吊销一把凭证没有办法表达，而「主体还在、凭证已失效」
--- 这个状态根本写不出来（a2 / b2 断言的正是这两件事）。
---
--- 每个 (actor_identity, kind) 至多一行：轮换是更新同一行并记下 `rotated_at`，
--- 不是追加一行新的。理由是「当前有效的口令是哪一个」必须只有一个答案；
--- 需要历史的话那属于审计，不属于这张表。
---
--- AIActor 的 Ed25519 公钥仍在 `ai_actor_credential`：它天然是一对多（一个身份
--- 挂多把钥匙、各自独立吊销），与这里「每类至多一行」的约束不同。两张表合并
--- 需要先决定多钥匙语义怎样表达，那是独立的一次改动，不在本次收口范围内。
-DEFINE TABLE IF NOT EXISTS credential SCHEMAFULL;
-
--- 凭证属于**身份根**，不属于 `user` 行。
-DEFINE FIELD IF NOT EXISTS actor_identity_id ON credential TYPE record<actor_identity>;
-
--- `password`。后续可能出现 `passkey` 等，但每一类进来都要先回答
--- 「它的轮换与吊销语义是什么」。
-DEFINE FIELD IF NOT EXISTS kind ON credential TYPE string
-    ASSERT $value IN ['password'];
-
--- 凭证密材的不可逆形式（Argon2id）。
---
--- 这一列永远只存不可逆的东西。需要可逆的密材（例如 TOTP 密钥）属于别处，
--- 它有自己的加密密钥与轮换代价。
-DEFINE FIELD IF NOT EXISTS secret_hash ON credential TYPE option<string>;
-
--- `active` | `revoked`
-DEFINE FIELD IF NOT EXISTS status ON credential TYPE string DEFAULT "active"
-    ASSERT $value IN ['active', 'revoked'];
-DEFINE FIELD IF NOT EXISTS created_at ON credential TYPE number;
-
--- 最后一次轮换的时刻。`NONE` 表示从未轮换过，不是「刚轮换过」。
-DEFINE FIELD IF NOT EXISTS rotated_at ON credential TYPE option<number>;
-DEFINE FIELD IF NOT EXISTS revoked_at ON credential TYPE option<number>;
-
--- 一个主体每类凭证至多一行。
-DEFINE INDEX IF NOT EXISTS credential_actor_kind_idx
-    ON credential COLUMNS actor_identity_id, kind UNIQUE;
 
 -- ═══════════════════════════════════════════════════════════════════
 -- 以下为 V1 遗留，Stage 2/3 逐步迁出
@@ -222,8 +159,7 @@ DEFINE FIELD IF NOT EXISTS subject_id ON user TYPE option<record<actor_identity>
 DEFINE FIELD IF NOT EXISTS email ON user TYPE string;
 DEFINE FIELD IF NOT EXISTS username ON user TYPE string;
 DEFINE FIELD IF NOT EXISTS username_normalized ON user TYPE string;
--- 口令**不在这张表上**。它住在 `credential` 里，有自己的状态、轮换时刻与吊销
--- 时刻；见上面 credential 一节与 `a2` / `b2` 两条不变式。
+DEFINE FIELD IF NOT EXISTS password ON user TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS verified ON user TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS verification_token_hash ON user TYPE option<string>;   -- 指纹，不是令牌
 DEFINE FIELD IF NOT EXISTS verification_token_expires_at ON user TYPE option<number>;
@@ -237,15 +173,15 @@ DEFINE FIELD IF NOT EXISTS created_at ON user TYPE number;
 DEFINE FIELD IF NOT EXISTS updated_at ON user TYPE number;
 DEFINE INDEX IF NOT EXISTS email_idx ON user COLUMNS email UNIQUE;
 DEFINE INDEX IF NOT EXISTS username_idx ON user COLUMNS username_normalized UNIQUE;
--- V1 的 `identity_provider` 表已删除。
---
--- 外部身份的解析权归 `identity_binding`：那张表上的绑定可以被撤销、可以处于
--- pending，而解析会据此拒绝。`identity_provider` 没有这些语义，它当年只是
--- 「这个外部 id 对应这个账号」的一张平表，而认证路径一度以它为事实源 ——
--- canonical binding 反而成了事后补的影子记录。
---
--- 升级步骤见 CHANGELOG：先把存量 identity_provider 行搬成 identity_binding，
--- 再 REMOVE TABLE。
+
+-- 身份提供商表
+DEFINE TABLE IF NOT EXISTS identity_provider SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS provider ON identity_provider TYPE string;
+DEFINE FIELD IF NOT EXISTS provider_user_id ON identity_provider TYPE string;
+DEFINE FIELD IF NOT EXISTS user_id ON identity_provider TYPE record<actor_identity>;
+DEFINE FIELD IF NOT EXISTS created_at ON identity_provider TYPE number;
+DEFINE FIELD IF NOT EXISTS updated_at ON identity_provider TYPE number;
+DEFINE INDEX IF NOT EXISTS provider_idx ON identity_provider COLUMNS provider, provider_user_id UNIQUE;
 
 -- 会话表
 DEFINE TABLE IF NOT EXISTS session SCHEMAFULL;
@@ -255,15 +191,6 @@ DEFINE FIELD IF NOT EXISTS expires_at ON session TYPE number;
 DEFINE FIELD IF NOT EXISTS created_at ON session TYPE number;
 DEFINE FIELD IF NOT EXISTS user_agent ON session TYPE string;
 DEFINE FIELD IF NOT EXISTS ip_address ON session TYPE string;
-
--- 认证来源（provenance）。
---
--- 会话此前只记「谁、什么时候、从哪来」，不记「用什么证明的」。于是吊销一枚
--- 凭证无法精确影响由它建立的会话，而 OIDC 的 `auth_time` 只能去拿
--- `user.last_login_at` —— 一个会被后来的登录覆盖的字段。
-DEFINE FIELD IF NOT EXISTS credential_kind ON session TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS credential_label ON session TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS authenticated_at ON session TYPE option<number>;
 DEFINE INDEX IF NOT EXISTS session_token_hash_idx ON session COLUMNS token_hash UNIQUE;
 
 -- 密码重置令牌表
@@ -352,7 +279,7 @@ DEFINE INDEX IF NOT EXISTS role_permission_permission_idx ON role_permission COL
 
 -- 用户档案表
 DEFINE TABLE IF NOT EXISTS user_profile SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS actor_identity_id ON user_profile TYPE record<actor_identity>;
+DEFINE FIELD IF NOT EXISTS user_id ON user_profile TYPE record<actor_identity>;
 DEFINE FIELD IF NOT EXISTS first_name ON user_profile TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS last_name ON user_profile TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS display_name ON user_profile TYPE option<string>;
@@ -366,7 +293,7 @@ DEFINE FIELD IF NOT EXISTS website ON user_profile TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS location ON user_profile TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON user_profile TYPE number;
 DEFINE FIELD IF NOT EXISTS updated_at ON user_profile TYPE number;
-DEFINE INDEX IF NOT EXISTS user_profile_user_idx ON user_profile COLUMNS actor_identity_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS user_profile_user_idx ON user_profile COLUMNS user_id UNIQUE;
 
 -- 用户偏好表
 DEFINE TABLE IF NOT EXISTS user_preferences SCHEMAFULL;
@@ -388,7 +315,7 @@ DEFINE INDEX IF NOT EXISTS user_preferences_user_idx ON user_preferences COLUMNS
 -- 用户活动日志表
 DEFINE TABLE IF NOT EXISTS user_activity SCHEMAFULL;
 -- 登录失败、限流触发这类事件未必对应一个已存在的用户，故为可选。
-DEFINE FIELD IF NOT EXISTS actor_identity_id ON user_activity TYPE option<record<actor_identity>>;
+DEFINE FIELD IF NOT EXISTS user_id ON user_activity TYPE option<record<actor_identity>>;
 DEFINE FIELD IF NOT EXISTS action ON user_activity TYPE string;
 DEFINE FIELD IF NOT EXISTS category ON user_activity TYPE string;
 DEFINE FIELD IF NOT EXISTS ip_address ON user_activity TYPE string;
@@ -400,7 +327,7 @@ DEFINE FIELD IF NOT EXISTS details ON user_activity TYPE object;
 DEFINE FIELD IF NOT EXISTS details.* ON user_activity TYPE any;
 DEFINE FIELD IF NOT EXISTS status ON user_activity TYPE string;
 DEFINE FIELD IF NOT EXISTS timestamp ON user_activity TYPE number;
-DEFINE INDEX IF NOT EXISTS user_activity_user_idx ON user_activity COLUMNS actor_identity_id;
+DEFINE INDEX IF NOT EXISTS user_activity_user_idx ON user_activity COLUMNS user_id;
 DEFINE INDEX IF NOT EXISTS user_activity_timestamp_idx ON user_activity COLUMNS timestamp;
 DEFINE INDEX IF NOT EXISTS user_activity_category_idx ON user_activity COLUMNS category;
 
@@ -529,9 +456,7 @@ DEFINE INDEX IF NOT EXISTS rate_limit_updated ON rate_limit FIELDS updated_at;
 
 DEFINE TABLE IF NOT EXISTS ai_actor_credential SCHEMAFULL;
 
--- 密钥只能挂在 **AIActor** 身份根上。反过来等于给人类账号开一条免口令通道。
-DEFINE FIELD IF NOT EXISTS actor_identity_id ON ai_actor_credential TYPE record<actor_identity>
-    ASSERT $value.actor_kind = 'ai_actor';
+DEFINE FIELD IF NOT EXISTS actor_identity_id ON ai_actor_credential TYPE record<actor_identity>;
 
 -- base64url-no-pad 的 32 字节 Ed25519 公钥。
 --

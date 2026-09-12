@@ -39,13 +39,26 @@ PROFILES = {
         "name": "Unverified",
         "picture": None,
     },
-    # 邮箱与既有本地账号相同：应当关联到该账号，而不是再建一个
+    # 邮箱与既有本地账号相同：必须拒绝（403），既不合并也不新建 —— 见 integration.sh
     "google-existing": {
         "id": "google-uid-3",
         "email": "admin@test.local",
         "verified_email": True,
         "name": "Admin via Google",
         "picture": None,
+    },
+    # ── 同邮箱、不同 Issuer ──
+    #
+    # 这个 GitHub 账号的已验证邮箱与 `google-ok` 建出来的本地账号相同。两家都说
+    # 这个邮箱"已验证"，只证明两家都认为它可达，不证明两个主体是同一个人。
+    # SoulAuth 必须拒绝，而不是把 GitHub 身份挂到那个 Google 建的账号上。
+    "github-same-email": {
+        "id": 4777,
+        "name": "Same Email via GitHub",
+        "avatar_url": None,
+        "_emails": [
+            {"email": "oauth-new@test.local", "primary": True, "verified": True},
+        ],
     },
     "github-ok": {
         "id": 4001,

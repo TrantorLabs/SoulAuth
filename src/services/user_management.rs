@@ -26,6 +26,7 @@ use crate::{
     services::{
         audit_logger::{AuditEvent, AuditLogger},
         auth::RequestContext,
+        credential::CredentialService,
         database::Database,
         rbac::RBACService,
     },
@@ -33,6 +34,8 @@ use crate::{
 
 pub struct UserManagementService {
     db: Arc<Database>,
+    /// 回答响应里的 `has_password`。口令不在账户行上，所以这个字段只能问凭证。
+    credentials: CredentialService,
 }
 
 impl UserManagementService {
@@ -66,7 +69,10 @@ impl UserManagementService {
     }
 
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+        Self {
+            credentials: CredentialService::new(db.clone()),
+            db,
+        }
     }
 
     // 用户档案管理
@@ -119,7 +125,7 @@ impl UserManagementService {
         let now = Utc::now().timestamp();
         let profile = UserProfile {
             id: None,
-            user_id: user_thing,
+            actor_identity_id: user_thing,
             first_name: request.first_name,
             last_name: request.last_name,
             display_name: request.display_name,
@@ -179,12 +185,12 @@ impl UserManagementService {
         // profile / preferences 挂在**身份根**上（Stage 3 起外键指 actor_identity）。
         let user_thing = self.db.actor_ref_of_user(user_id).await?;
 
-        let query = "SELECT * FROM user_profile WHERE user_id = $user_id";
+        let query = "SELECT * FROM user_profile WHERE actor_identity_id = $actor_identity_id";
         let mut response = self
             .db
             .client
             .query(query)
-            .bind(("user_id", user_thing.clone()))
+            .bind(("actor_identity_id", user_thing.clone()))
             .await
             .and_then(|response| response.check())
             .map_err(|e| {
@@ -237,7 +243,7 @@ impl UserManagementService {
                 website = $website ?? website,
                 location = $location ?? location,
                 updated_at = $updated_at
-            WHERE user_id = (SELECT VALUE subject_id FROM type::record('user', $user_key))[0]
+            WHERE actor_identity_id = (SELECT VALUE subject_id FROM type::record('user', $user_key))[0]
         "#;
 
         let bindings = serde_json::json!({
@@ -580,6 +586,22 @@ impl UserManagementService {
                 Ok(None) => {}
                 Err(e) => error!("Failed to load actor for status sync: {e:?}"),
             }
+
+            // 账号被删除时吊销口令凭证。
+            //
+            // 只在 `Deleted` 上做，不在 `Suspended` 上做：停用是可逆的，恢复之后
+            // 用户应当还能用原来的口令登录；而删除不可逆，那把凭证不该继续可用。
+            //
+            // 吊销是改状态而不是删行 —— 「这把凭证曾经存在且被吊销了」与
+            // 「从来没有过」是两个不同的事实。
+            if request.status == crate::models::user::AccountStatus::Deleted {
+                if let Err(e) = self.credentials.revoke_password(&actor_id).await {
+                    // 与上面同样的道理：账户状态已经写成 Deleted，凭证还可用，
+                    // 两处不一致比两处都是旧的更危险。
+                    error!("Failed to revoke password credential on delete: {e:?}");
+                    return Err(e);
+                }
+            }
         }
 
         // 记录活动
@@ -666,7 +688,7 @@ impl UserManagementService {
         let offset = (page - 1).saturating_mul(limit);
 
         let mut where_clauses = vec![
-            "user_id = (SELECT VALUE subject_id FROM type::record('user', $user_key))[0]"
+            "actor_identity_id = (SELECT VALUE subject_id FROM type::record('user', $user_key))[0]"
                 .to_string(),
         ];
         if request.category.is_some() {
@@ -774,9 +796,22 @@ impl UserManagementService {
             .next()
             .ok_or_else(|| AuthError::NotFound("User not found".to_string()))?;
 
-        let mut response: UserResponse = user.into();
+        let has_password = self.has_password_for(&user).await?;
+        let mut response = UserResponse::of(user, has_password);
         response.is_admin = self.user_has_admin_role(user_id).await?;
         Ok(response)
+    }
+
+    /// 单个账户行的 `has_password`。
+    ///
+    /// 没有身份根的账户行（Stage 3 迁移之前的遗留）一律按「没有口令」处理：
+    /// 它的凭证无从查起，而把一个查不到的东西报成 `true` 会让前端隐藏设置
+    /// 口令的入口。
+    async fn has_password_for(&self, user: &User) -> Result<bool, AuthError> {
+        match user.subject_id.as_ref() {
+            Some(actor) => self.credentials.has_password(actor).await,
+            None => Ok(false),
+        }
     }
 
     async fn user_has_admin_role(&self, user_id: &str) -> Result<bool, AuthError> {
@@ -864,6 +899,20 @@ impl UserManagementService {
 
         let total_pages = (total as f64 / limit as f64).ceil() as u32;
 
+        // 一次问清这一页里谁有可用口令。
+        //
+        // 逐行查是 N+1：一页 50 个用户就是 50 次往返，而这个字段只是用来决定
+        // 前端显示「设置口令」还是「修改口令」。
+        let actor_keys: Vec<String> = users
+            .iter()
+            .filter_map(|u| u.subject_id.as_ref())
+            .map(crate::utils::record_id::record_id_key_to_string)
+            .collect();
+        let with_password = self
+            .credentials
+            .identities_with_password(&actor_keys)
+            .await?;
+
         let mut user_responses = Vec::with_capacity(users.len());
         for user in users {
             let user_id = crate::utils::record_id::record_id_key_to_string(
@@ -871,7 +920,18 @@ impl UserManagementService {
                     .as_ref()
                     .ok_or_else(|| AuthError::DatabaseError("User missing id".to_string()))?,
             );
-            let mut response: UserResponse = user.into();
+            let has_password = user
+                .subject_id
+                .as_ref()
+                .map(|a| {
+                    let addr = format!(
+                        "actor_identity:{}",
+                        crate::utils::record_id::record_id_key_to_string(a)
+                    );
+                    with_password.contains(&addr)
+                })
+                .unwrap_or(false);
+            let mut response = UserResponse::of(user, has_password);
             response.is_admin = self.user_has_admin_role(&user_id).await?;
             user_responses.push(response);
         }
@@ -925,7 +985,8 @@ impl UserManagementService {
                 .as_ref()
                 .ok_or_else(|| AuthError::DatabaseError("Updated user missing id".to_string()))?,
         );
-        let mut response: UserResponse = updated.into();
+        let has_password = self.has_password_for(&updated).await?;
+        let mut response = UserResponse::of(updated, has_password);
         response.is_admin = self.user_has_admin_role(&updated_id).await?;
         Ok(response)
     }

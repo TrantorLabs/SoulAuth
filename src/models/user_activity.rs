@@ -23,7 +23,8 @@ pub enum ActivityStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserActivityResponse {
     pub id: String,
-    pub user_id: String,
+    /// 归因到的身份根地址，不是 user 行的 id。
+    pub actor_identity_id: String,
     pub action: String,
     pub category: ActivityCategory,
     pub ip_address: String,
@@ -36,14 +37,14 @@ pub struct UserActivityResponse {
 /// 从数据库读回来的一行活动记录。
 ///
 /// `user_activity` 的写入统一走 serde（枚举存成纯字符串、record 链接投影成
-/// 字符串），因此读取也必须走 serde。`UserActivity` 里的 `id` / `user_id` 是
+/// 字符串），因此读取也必须走 serde。`UserActivity` 里的 `id` / `actor_identity_id` 是
 /// `RecordId`，serde 无法从投影出来的字符串还原，所以单独定义这个行结构。
 #[derive(Debug, Deserialize)]
 pub struct UserActivityRow {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
-    pub user_id: Option<String>,
+    pub actor_identity_id: Option<String>,
     pub action: String,
     pub category: ActivityCategory,
     pub ip_address: String,
@@ -69,7 +70,7 @@ impl From<UserActivityRow> for UserActivityResponse {
 
         Self {
             id: strip(row.id),
-            user_id: strip(row.user_id),
+            actor_identity_id: strip(row.actor_identity_id),
             action: row.action,
             category: row.category,
             ip_address: row.ip_address,

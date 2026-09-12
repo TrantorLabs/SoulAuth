@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use surrealdb::types::RecordId as Thing;
 
 use crate::{
     error::{AuthError, Result},
@@ -245,8 +246,21 @@ where
 
         // 命中缓存就跳过两次数据库往返。缓存项只在本实例的登出 / 改密 /
         // 停用时被主动清除，跨副本的吊销最多滞后一个 TTL。
+        // 缓存命中**不能**跳过身份根闸门。
+        //
+        // 缓存里只有 `user` 行，而 `user.account_status` 不是最终裁决 ——
+        // 直接暂停一个 Human 的 `actor_identity` 必须立刻使其令牌失效。
+        // 为此缓存命中时仍走一次闸门：它只读身份根与账户扩展两行，而省下的是
+        // 会话与权限那几跳。
         if let Some(cache) = &cache {
             if let Some(user) = cache.get(&token).await {
+                let db = db_from_parts(parts)?;
+                let user_id = crate::utils::record_id::record_id_key_to_string(
+                    user.id.as_ref().ok_or(AuthError::UserNotFound)?,
+                );
+                crate::services::identity::IdentityService::new(db)
+                    .authenticable_actor_of_user(&user_id)
+                    .await?;
                 ensure_account_usable(&user)?;
                 return Ok(AuthedUser(user));
             }
@@ -266,8 +280,19 @@ where
         }
 
         let db = db_from_parts(parts)?;
-        let user = load_user_from_claims(&db, &claims).await?;
 
+        // 先解析身份根并过闸门，再取 Human 的账户扩展。
+        //
+        // 顺序是这条不变式的全部内容：`user` 行只是 Human 的扩展，不是认证主体。
+        // 反过来写（先拿 user、再看它的 account_status）就是旧本体 —— 身份根的
+        // 状态对认证不起作用。
+        let actor = crate::services::identity::IdentityService::new(db.clone())
+            .authenticable_actor(&claims.sub, crate::models::actor_identity::ActorKind::Human)
+            .await?;
+        let user = load_user_from_actor(&db, &actor.actor_ref()?).await?;
+
+        // 账户扩展自己的状态仍然有效（Inactive / Deleted 是账户层的事实），
+        // 但它是**附加**条件，不是唯一条件。
         ensure_account_usable(&user)?;
 
         if let Some(cache) = &cache {
@@ -325,26 +350,27 @@ where
 }
 
 /// 从 claims 解析出用户记录，兼容 `sub` 为 `subject:xxx` 的令牌。
-pub async fn load_user_from_claims(db: &Database, claims: &Claims) -> Result<User> {
-    if claims.sub.starts_with("subject:") {
-        let users: Vec<User> = db
-            .query_take0_vec(
-                "load_user_by_subject_id",
-                // 同样必须两参：单参会在 UUID 的第一个连字符处截断。
-                "SELECT * FROM user WHERE subject_id = type::record('subject', $subject_key) LIMIT 1",
-                json!({
-                    "subject_key": crate::utils::record_id::normalize_record_id_key(
-                        claims.sub.strip_prefix("subject:").unwrap_or(&claims.sub),
-                    ),
-                }),
-            )
-            .await?;
-        users.into_iter().next().ok_or(AuthError::UserNotFound)
-    } else {
-        db.find_record_by_field::<User>("user", "id", &claims.sub)
-            .await?
-            .ok_or(AuthError::UserNotFound)
-    }
+/// 按**身份根**取 Human 的账户扩展行。
+///
+/// 这个函数以前叫 `load_user_from_claims`，直接拿 `claims.sub` 当 user 主键去
+/// 查 —— 那意味着令牌里的主体是账户行，而不是身份根。现在 `sub` 是身份根的
+/// key，账户行只能经由 `subject_id` 反查。
+///
+/// 取不到就是身份关系断裂（有身份根、没有账户扩展），不是「用户不存在」。
+/// 闸门已经拦过这种情况，这里是第二道。
+pub async fn load_user_from_actor(db: &Database, actor_ref: &Thing) -> Result<User> {
+    let users: Vec<User> = db
+        .query_take0_vec(
+            "load_user_by_actor",
+            // 两参形式是必须的：单参会在 UUID 的第一个连字符处截断。
+            "SELECT * FROM user \
+             WHERE subject_id = type::record('actor_identity', $actor_key) LIMIT 1",
+            json!({
+                "actor_key": crate::utils::record_id::record_id_key_to_string(actor_ref),
+            }),
+        )
+        .await?;
+    users.into_iter().next().ok_or(AuthError::UserNotFound)
 }
 
 #[cfg(test)]
