@@ -80,9 +80,21 @@ jobs:
       #
       # 这里要的是第三件事：**新出现的 advisory 不得被旧说明掩盖**。逐项 ignore
       # 之后，名单之外的任何一条都会让这个 job 变红。
+      #
+      # 工具版本钉到 0.22：0.21 不认 CVSS 4.0，而 advisory 数据库里已经出现了用
+      # CVSS 4.0 写的条目（RUSTSEC-2026-0180，postgres-protocol —— 甚至不是我们的
+      # 依赖）。旧版遇到它**整个数据库解析失败**，一条都查不了，于是这个 job 因为
+      # 别人的 advisory 格式升级而变红。这不是我们的依赖出了问题，却会被当成是。
+      #
+      # 所以把「工具装不上 / 数据库读不了」与「我们有新 advisory」分开：前者报
+      # 明确的错误并失败（它确实该有人看），但不会被误读成依赖告警。
+      - name: install cargo-audit
+        run: |
+          cargo install cargo-audit --locked --version ^0.22
+          cargo audit --version
       - name: cargo audit
         run: |
-          cargo install cargo-audit --locked --version ^0.21 || cargo audit --version
+          set -o pipefail
           cargo audit \
             --ignore RUSTSEC-2023-0071 \
             --ignore RUSTSEC-2025-0009 \
@@ -90,7 +102,13 @@ jobs:
             --ignore RUSTSEC-2024-0421 \
             --ignore RUSTSEC-2026-0235 \
             --ignore RUSTSEC-2023-0089 \
-            --ignore RUSTSEC-2024-0370
+            --ignore RUSTSEC-2024-0370 \
+            2>&1 | tee audit.log
+          # 区分两种失败。数据库解析失败的文案来自 cargo-audit 自身。
+          if grep -q 'error loading advisory database' audit.log; then
+            echo '::error::cargo-audit could not parse the advisory database — this is a tool/format issue, not a dependency advisory. Bump the pinned cargo-audit version.'
+            exit 1
+          fi
 
       # 依赖清单随构建一起留档：出了 advisory 才去翻锁文件的历史太晚了。
       - name: dependency inventory

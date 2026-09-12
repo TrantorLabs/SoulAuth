@@ -36,6 +36,13 @@ the job red, so a newly published advisory cannot hide behind the old reasoning.
 also stores the resolved dependency tree as a build artifact — going to look at the lock
 file's history after an advisory lands is too late.
 
+The job distinguishes a real advisory from a tooling failure. The advisory database is
+maintained by others and its format moves: an entry written with CVSS 4.0 made an older
+`cargo-audit` fail to parse the whole database, which reads like "the dependencies are
+unsafe" when it means "the tool is out of date". That case fails the job with a message
+naming the cause and the fix — bump the pinned `cargo-audit` version — so nobody reads a
+format change as a security regression.
+
 ## Known limitations
 
 - **The database login is namespace- or database-scoped in production, and the
