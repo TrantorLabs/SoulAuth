@@ -22,6 +22,16 @@ redo the analysis:
 | `atomic-polyfill` | RUSTSEC-2023-0089 (unmaintained) | Transitive. |
 | `proc-macro-error` | RUSTSEC-2024-0370 (unmaintained) | Build-time only; never reaches the runtime. |
 
+### Advisories that were fixed rather than ignored
+
+The table above is for advisories with no reachable fix. When a fixed version exists and
+fits the existing constraints, the lock file is bumped instead — the ignore list must not
+grow just because an entry is inconvenient.
+
+| Dependency | Advisory | What was done |
+|---|---|---|
+| `ammonia 4.1.2` (via `surrealdb-core`) | RUSTSEC-2026-0193, RUSTSEC-2026-0213 (XSS in HTML sanitiser) | Bumped to 4.1.4 in `Cargo.lock`. SurrealDB only calls it from the SurrealQL `string::html::*` functions, which no query in this project uses, so the flaw was not reachable here — but the fix was free and the dependency tree got eight crates smaller. |
+
 ### Why `axum` / `jsonwebtoken` aren't upgraded to clear `ring 0.16`
 
 `ring 0.16` comes from `jsonwebtoken 8`, and `hyper 0.14` from `axum 0.6`. Upgrading
