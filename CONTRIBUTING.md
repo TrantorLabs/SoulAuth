@@ -15,9 +15,10 @@ fixes, documentation and obviously-scoped bug fixes need no issue.
 ## Running the checks
 
 ```bash
-cargo test                                # 188 unit tests + 65 conformance invariants
-cargo build && ./tests/integration.sh     # 27 groups, 351 assertions, real database
+cargo test                                # 196 unit tests + 77 conformance invariants
+cargo build && ./tests/integration.sh     # 28 groups, 391 assertions, real database
 ./tests/deployment_walkthrough.sh         # executes DEPLOYMENT.md from an empty database
+./tests/migration_walkthrough.sh          # executes the CHANGELOG upgrade steps against a previous-release database
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` (1.91.1); `rustup` picks it up on its
@@ -57,9 +58,9 @@ snapshot was taken from a clean tree, but not that it is up to date.
 ## Architecture invariants
 
 `tests/conformance.rs` asserts architectural rules against the source and the schema —
-things like "an ActorIdentity is not a credential" and "the audit log is chained". Seven
-of them are `#[ignore]`d because they do not hold yet; each carries the stage it belongs
-to. `cargo test --test conformance -- --ignored` lists them.
+things like "an ActorIdentity is not a credential" and "the audit log is chained". One
+of them is `#[ignore]`d because it does not hold yet — repositories are not separated by
+domain. `cargo test --test conformance -- --ignored` lists them.
 
 **Relaxing an assertion in that file is a bigger change than it looks.** If your work
 makes one fail, the question to answer in the pull request is which is wrong — the code

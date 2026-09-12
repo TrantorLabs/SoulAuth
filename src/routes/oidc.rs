@@ -27,7 +27,7 @@ use crate::{
         oidc::{JwksResponse, OidcConfiguration, OidcService},
     },
     utils::{
-        jwt::{decode_and_verify_token, load_user_from_claims},
+        jwt::{decode_and_verify_token, load_user_from_actor},
         record_id::{normalize_user_id, record_id_key_to_string},
     },
 };
@@ -440,10 +440,26 @@ async fn authorize(
                         // 账号状态同样要看：`decode_and_verify_token` 只验签名、有效期
                         // 与会话是否还在，对停用一无所知。不可用就当作未登录往下走到
                         // 登录页，而不是在这里签授权码。
-                        if let Ok(user) = load_user_from_claims(&db, &claims)
-                            .await
-                            .and_then(|user| user.ensure_usable().map(|_| user))
-                        {
+                        // 与别处同一个闸门：身份根先于账户行。authorize 以前
+                        // 只看 `user.ensure_usable()`，于是一个被暂停的身份根
+                        // 仍然能在这里换到授权码。
+                        let resolved =
+                            match crate::services::identity::IdentityService::new(db.clone())
+                                .authenticable_actor(
+                                    &claims.sub,
+                                    crate::models::actor_identity::ActorKind::Human,
+                                )
+                                .await
+                            {
+                                Ok(actor) => match actor.actor_ref() {
+                                    Ok(actor_ref) => load_user_from_actor(&db, &actor_ref)
+                                        .await
+                                        .and_then(|user| user.ensure_usable().map(|_| user)),
+                                    Err(e) => Err(e),
+                                },
+                                Err(e) => Err(e),
+                            };
+                        if let Ok(user) = resolved {
                             let user_id = record_id_key_to_string(
                                 user.id.as_ref().ok_or(AuthError::UserNotFound)?,
                             );
@@ -861,15 +877,44 @@ async fn logout(
     });
 
     if let Some((user_id, client_id)) = &hint {
+        // RP-initiated logout 必须按协议重定向回去，所以这里**不能**改成返回 500。
+        //
+        // 但失败也不能只留一行日志：那等于对外宣称已登出、而旧信任仍然有效，
+        // 并且没有任何地方能看出来。所以失败写一条 Failed 状态的审计事件 ——
+        // 它会进哈希链，运维能查到「哪一次登出没有真正撤销」。
+        let mut revocation_failed: Option<String> = None;
         if let Err(e) = oidc_service
             .revoke_client_tokens_for_user(client_id, user_id)
             .await
         {
             tracing::error!(error = %e, "Failed to revoke OIDC tokens on logout");
+            revocation_failed = Some(format!("tokens: {e}"));
         }
         // 同时结束该用户在本 IdP 上的 API 会话。
         if let Err(e) = db.delete_sessions_by_user_id(user_id).await {
             tracing::error!(error = %e, "Failed to revoke sessions on logout");
+            revocation_failed = Some(match revocation_failed {
+                Some(prev) => format!("{prev}; sessions: {e}"),
+                None => format!("sessions: {e}"),
+            });
+        }
+        if let Some(reason) = revocation_failed {
+            if let Some(audit) = crate::services::audit_logger::AuditLogger::global() {
+                audit.record(
+                    crate::services::audit_logger::AuditEvent::new(
+                        crate::services::audit_logger::actions::LOGOUT,
+                        crate::models::user_activity::ActivityCategory::Security,
+                        crate::models::user_activity::ActivityStatus::Failed,
+                        String::new(),
+                        String::new(),
+                    )
+                    .with_user(user_id.clone())
+                    .with_details(serde_json::json!({
+                        "revocation": "incomplete",
+                        "reason": reason,
+                    })),
+                );
+            }
         }
     }
 

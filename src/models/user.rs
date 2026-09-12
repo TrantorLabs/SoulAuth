@@ -18,9 +18,6 @@ pub struct User {
     pub username: String,
     #[serde(default)]
     pub username_normalized: String,
-    #[surreal(rename = "password")]
-    #[serde(rename = "password")]
-    pub password_hash: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     #[surreal(rename = "verified")]
@@ -248,8 +245,18 @@ impl User {
     }
 }
 
-impl From<User> for UserResponse {
-    fn from(user: User) -> Self {
+impl UserResponse {
+    /// 从账户行生成响应。
+    ///
+    /// `has_password` 必须由调用方给出，这里刻意**不提供** `From<User>`。
+    ///
+    /// 口令哈希曾经是 `user` 的一列，于是这个字段可以就地推导出来。口令搬进
+    /// `credential` 之后，账户行里已经没有任何依据 —— 而一个 `From` 实现只能
+    /// 默默填 `false`。那个 `false` 会让 OAuth 回调把已经设过口令的人再送去
+    /// 设置口令页，而且不会有任何东西报错。
+    ///
+    /// 所以改成显式参数：六个构造点各自回答这个问题，漏一个就编译不过。
+    pub fn of(user: User, has_password: bool) -> Self {
         let account_status = AccountStatus::parse(&user.account_status);
 
         let created_at =
@@ -273,7 +280,7 @@ impl From<User> for UserResponse {
             membership_level: user.membership_level,
             membership_expiry: user.membership_expiry,
             created_at,
-            has_password: user.password_hash.is_some(),
+            has_password,
             account_status,
             last_login_at,
         }
@@ -318,7 +325,6 @@ mod account_status_tests {
                 email: "a@example.com".to_string(),
                 username: "a".to_string(),
                 username_normalized: "a".to_string(),
-                password_hash: None,
                 created_at: 0,
                 updated_at: 0,
                 is_email_verified: true,

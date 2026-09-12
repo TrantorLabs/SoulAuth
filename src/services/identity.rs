@@ -27,6 +27,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use surrealdb::types::RecordId as Thing;
 use uuid::Uuid;
 
 use crate::{
@@ -39,15 +40,39 @@ use crate::{
     services::database::Database,
 };
 
-/// 一个人类身份的两条记录。
+/// 一次认证请求解析出来的、**当前有资格继续认证**的主体。
 ///
-/// 它们必须一起存在：`actor_identity` 回答「谁」，`human_account` 回答
-/// 「这个人怎样管理自己的登录账户」。分开返回而不是合成一个结构体，是为了让
-/// 调用方在类型上就看见这是两个对象 —— 合成一个很快就会退化回 V1 的 `User`。
+/// 它是这个系统里唯一的「认证主体」。拿到它意味着三件事都已经成立：
+///
+/// 1. 身份根存在；
+/// 2. 它的 `actor_kind` 与调用方声明的一致（Human 不能走 AIActor 的免口令通道，
+///    反之亦然）；
+/// 3. 它的 `status` 允许认证。
+///
+/// `account` 是 Human 的**扩展**，可以为 `None`（AIActor 没有账户）。它不是
+/// 认证主体 —— 这正是 `user` 行长期以来越权承担的角色。
 #[derive(Debug, Clone)]
-pub struct HumanIdentity {
+pub struct AuthenticableActor {
     pub actor: ActorIdentity,
-    pub account: HumanAccount,
+    pub account: Option<HumanAccount>,
+}
+
+impl AuthenticableActor {
+    /// 对外稳定的 Authentication Subject。
+    ///
+    /// OIDC 的 `sub` 用它，而不是 record id，也不是 `user.id`：邮箱、用户名、
+    /// 凭证轮换、经由哪个 Client 进入，都不得改变它（GA-04 §7）。
+    pub fn subject_key(&self) -> &str {
+        &self.actor.subject_key
+    }
+
+    /// 身份根的 record 引用。
+    pub fn actor_ref(&self) -> Result<Thing> {
+        self.actor
+            .id
+            .clone()
+            .ok_or_else(|| AuthError::DatabaseError("actor_identity 没有 id".into()))
+    }
 }
 
 #[derive(Clone)]
@@ -69,61 +94,126 @@ impl IdentityService {
         Uuid::new_v4().to_string()
     }
 
-    /// 建立一个人类身份：`actor_identity` + `human_account`。
+    /// 一次事务建齐一个 Human 的**全部**落库对象。
     ///
-    /// 邮箱与用户名的唯一性由数据库索引保证，冲突会以唯一约束错误返回，
-    /// 由调用方翻译成 409 —— 这里不预先查一次再插入，那是 TOCTOU。
-    pub async fn create_human(
+    /// `actor_identity` + `human_account` + `user`，以及按需的口令凭证与外部绑定。
+    ///
+    /// # 为什么要一起建
+    ///
+    /// 这五张表以前是逐条写的，任何一步失败都会留下一种不会报错、只会在某天
+    /// 表现为「这个账号坏了」的中间态：
+    ///
+    /// * 有身份根没有 `user` 行 → 登录按邮箱查 `user` 查不到，而重新注册又撞
+    ///   `human_account` 的邮箱唯一索引：这个邮箱从此既登不进也注册不了；
+    /// * 有账号没有凭证 → 口令永远验不过；
+    /// * 社交首登建了账号没建绑定 → 下一次登录解析不到绑定，走到「同邮箱撞既有
+    ///   账号」那一支被拒，于是这个账号再也登不进来。
+    ///
+    /// 返回身份根与 `user` 行的 key。记录本身在事务外按已知 key 重读 ——
+    /// 事务的结果槽位包含 `BEGIN`/`COMMIT`，按下标取值换一条语句就会错位。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_human_aggregate(
         &self,
         email: &str,
         username: &str,
         username_normalized: &str,
-    ) -> Result<HumanIdentity> {
-        let actor = ActorIdentity::new_local(Self::new_subject_key(), ActorKind::Human);
-        let actor: ActorIdentity = self.db.create_record("actor_identity", &actor).await?;
+        email_verified: bool,
+        verification_token_hash: Option<String>,
+        verification_token_expires_at: Option<i64>,
+        password_hash: Option<String>,
+        binding: Option<(String, String)>,
+    ) -> Result<(String, String)> {
+        let now = chrono::Utc::now().timestamp();
+        let actor_key = Uuid::new_v4().to_string();
+        let user_key = Uuid::new_v4().to_string();
 
-        let actor_id = actor
-            .id
-            .clone()
-            .ok_or_else(|| AuthError::DatabaseError("actor_identity 落库后没有 id".into()))?;
-
-        let account = HumanAccount::new(actor_id, email, username, username_normalized);
-        let account: HumanAccount = self.db.create_record("human_account", &account).await?;
-
-        Ok(HumanIdentity { actor, account })
-    }
-
-    /// 按邮箱找人类身份。
-    ///
-    /// 邮箱属于 `human_account`，所以要两跳：先账户，再身份根。这个多出来的
-    /// 一跳正是拆分的代价，也正是拆分的意义 —— 邮箱变了，身份根不动。
-    pub async fn find_human_by_email(&self, email: &str) -> Result<Option<HumanIdentity>> {
-        let Some(account) = self
-            .db
-            .find_record_by_field::<HumanAccount>("human_account", "email", email)
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        let actor_address = format!(
-            "actor_identity:{}",
-            crate::utils::record_id::record_id_key_to_string(&account.actor_identity_id)
+        let mut sql = String::from(
+            "CREATE type::record('actor_identity', $actor_key) CONTENT { \
+                 subject_key: $subject_key, \
+                 actor_kind: 'human', \
+                 identity_source: 'local', \
+                 status: 'active', \
+                 created_at: $now, \
+                 updated_at: $now \
+             }; \
+             CREATE type::record('human_account', $account_key) CONTENT { \
+                 actor_identity_id: type::record('actor_identity', $actor_key), \
+                 email: $email, \
+                 username: $username, \
+                 username_normalized: $username_normalized, \
+                 email_verified: $email_verified, \
+                 created_at: $now, \
+                 updated_at: $now \
+             }; \
+             CREATE type::record('user', $user_key) CONTENT { \
+                 subject_id: type::record('actor_identity', $actor_key), \
+                 email: $email, \
+                 username: $username, \
+                 username_normalized: $username_normalized, \
+                 verified: $email_verified, \
+                 verification_token_hash: $verification_token_hash ?? NONE, \
+                 verification_token_expires_at: $verification_token_expires_at ?? NONE, \
+                 account_status: 'Active', \
+                 membership_level: 'FREE', \
+                 created_at: $now, \
+                 updated_at: $now \
+             };",
         );
-        let Some(actor) = self
-            .db
-            .find_record_by_field::<ActorIdentity>("actor_identity", "id", &actor_address)
-            .await?
-        else {
-            // 账户存在而身份根不存在，说明有人绕过这一层直接写了库，
-            // 或者删除路径没有成对处理。这是数据完整性问题，不是「找不到」。
-            return Err(AuthError::DatabaseError(format!(
-                "human_account {} 指向了不存在的 actor_identity",
-                account.email
-            )));
+        if password_hash.is_some() {
+            sql.push_str(
+                " CREATE type::record('credential', $credential_key) CONTENT { \
+                     actor_identity_id: type::record('actor_identity', $actor_key), \
+                     kind: 'password', \
+                     secret_hash: $password_hash, \
+                     status: 'active', \
+                     created_at: $now \
+                 };",
+            );
+        }
+        if binding.is_some() {
+            sql.push_str(
+                " CREATE type::record('identity_binding', $binding_key) CONTENT { \
+                     actor_identity_id: type::record('actor_identity', $actor_key), \
+                     provider: $provider, \
+                     provider_subject: $provider_subject, \
+                     binding_type: 'federated', \
+                     verification_state: 'verified', \
+                     bound_at: $now \
+                 };",
+            );
+        }
+
+        let (provider, provider_subject) = match binding {
+            Some((p, s)) => (Some(p), Some(s)),
+            None => (None, None),
         };
 
-        Ok(Some(HumanIdentity { actor, account }))
+        self.db
+            .transaction(
+                "identity_create_human_aggregate",
+                &sql,
+                serde_json::json!({
+                    "actor_key": actor_key,
+                    "account_key": Uuid::new_v4().to_string(),
+                    "user_key": user_key,
+                    "credential_key": Uuid::new_v4().to_string(),
+                    "binding_key": Uuid::new_v4().to_string(),
+                    "subject_key": Self::new_subject_key(),
+                    "email": email,
+                    "username": username,
+                    "username_normalized": username_normalized,
+                    "email_verified": email_verified,
+                    "verification_token_hash": verification_token_hash,
+                    "verification_token_expires_at": verification_token_expires_at,
+                    "password_hash": password_hash,
+                    "provider": provider,
+                    "provider_subject": provider_subject,
+                    "now": now,
+                }),
+            )
+            .await?;
+
+        Ok((actor_key, user_key))
     }
 
     /// 通过外部身份绑定解析到本地身份。
@@ -168,7 +258,14 @@ impl IdentityService {
             .await
     }
 
-    /// 为一个已有身份建立外部绑定。
+    /// 为一个**已有**身份建立外部绑定 —— 显式 Account Linking 的落库动作。
+    ///
+    /// 登录路径**不**调用它：首次联合登录在 [`Self::create_human_aggregate`] 的同一
+    /// 事务里建绑定，而邮箱撞上既有账户时登录直接拒绝。这里服务的是另一条流程：
+    /// 主体已认证、新 IdP 也已认证、用户明确确认之后，才把两者绑起来。那条流程
+    /// 的 HTTP 入口尚未提供；提供时必须满足这三个前置条件，缺一不可 —— 否则它
+    /// 就退化成登录路径上被删掉的那个「同邮箱自动挂接」。
+    #[allow(dead_code)] // 显式 Account Linking 的落库动作；HTTP 入口尚未提供，见上方说明。
     pub async fn bind_external(
         &self,
         actor: &ActorIdentity,
@@ -221,6 +318,90 @@ impl IdentityService {
     ///
     /// Retired 之后 `subject_key` 不得被重新分配 —— 这里不删记录正是为此：
     /// 记录留着，唯一索引就继续挡住复用。
+    /// **唯一的认证闸门。**
+    ///
+    /// 密码登录、MFA 第二步、OAuth 回调、Bearer 提取器、OIDC authorize /
+    /// refresh / userinfo —— 每一条认证路径都必须经过这里，而不是各自去查
+    /// `user.account_status`。
+    ///
+    /// 为什么必须收到一处：在这之前，Human 的多数路径只看 `user.account_status`，
+    /// 于是直接暂停一个 Human 的 `actor_identity` 对认证**没有任何效果** ——
+    /// 作为「规范身份边界」的身份根并不拥有最终裁决权。那不是某一条路径写漏了，
+    /// 而是判据散在六处的必然结果。
+    ///
+    /// 一律 fail closed：身份根不存在、种类不符、状态不允许，全都拒绝，
+    /// 不退回旧 `user` 语义。
+    pub async fn authenticable_actor(
+        &self,
+        actor_key: &str,
+        expect: ActorKind,
+    ) -> Result<AuthenticableActor> {
+        let key = crate::utils::record_id::normalize_actor_id(actor_key);
+        let Some(actor) = self.find_actor_by_id(&key).await? else {
+            // 身份根缺失不是「找不到用户」，是身份关系断裂。对外不区分，
+            // 对内必须拒绝。
+            return Err(AuthError::Unauthorized(
+                "Identity root is missing or unresolvable".to_string(),
+            ));
+        };
+
+        if actor.actor_kind_parsed() != Some(expect) {
+            return Err(AuthError::Forbidden(format!(
+                "This credential path is only for {} subjects",
+                expect.as_str()
+            )));
+        }
+
+        match actor.status_parsed() {
+            ActorStatus::Active => {}
+            ActorStatus::Suspended => return Err(AuthError::AccountSuspended),
+            // Retired 不可恢复，也不得复用 subject。
+            ActorStatus::Retired => return Err(AuthError::AccountDeleted),
+        }
+
+        // Human 的账户扩展。AIActor 没有账户，缺失是正常的。
+        let account = if expect == ActorKind::Human {
+            let actor_ref = actor
+                .id
+                .clone()
+                .ok_or_else(|| AuthError::DatabaseError("actor_identity 没有 id".into()))?;
+            let rows: Vec<HumanAccount> = self
+                .db
+                .query_take0_vec(
+                    "identity_account_of_actor",
+                    "SELECT * FROM human_account \
+                     WHERE actor_identity_id = type::record('actor_identity', $key) LIMIT 1",
+                    serde_json::json!({
+                        "key": crate::utils::record_id::record_id_key_to_string(&actor_ref),
+                    }),
+                )
+                .await?;
+            let account = rows.into_iter().next();
+            if account.is_none() {
+                // Human 身份根没有账户扩展，说明创建过程中断过。fail closed：
+                // 这种半成品不该能登录。
+                return Err(AuthError::Unauthorized(
+                    "Identity is incomplete and cannot authenticate".to_string(),
+                ));
+            }
+            account
+        } else {
+            None
+        };
+
+        Ok(AuthenticableActor { actor, account })
+    }
+
+    /// 过渡期入口：从 `user` 行解析到身份根，再走同一个闸门。
+    ///
+    /// `user` 行仍是很多外键的载体，所以旧路径手上只有 user id。这里**不**让
+    /// 它绕过闸门，只是把它翻译成身份根。
+    pub async fn authenticable_actor_of_user(&self, user_id: &str) -> Result<AuthenticableActor> {
+        let actor_ref = self.db.actor_ref_of_user(user_id).await?;
+        let key = crate::utils::record_id::record_id_key_to_string(&actor_ref);
+        self.authenticable_actor(&key, ActorKind::Human).await
+    }
+
     pub async fn set_status(&self, actor: &ActorIdentity, status: ActorStatus) -> Result<()> {
         let id = actor
             .id

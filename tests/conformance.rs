@@ -202,12 +202,55 @@ fn a1_actor_identity_is_not_account() {
 ///
 /// 「用什么证明自己」与「是谁」是两个对象。password 不得是身份根的列。
 #[test]
-#[ignore = "V2 Stage 1/2 —— password 是 user 的列，TOTP 在 user_mfa，未收口"]
 fn a2_actor_identity_is_not_credential() {
     assert!(table_exists("credential"), "缺少统一 credential 表");
     assert!(
         !field_exists(identity_root(), "password"),
         "password 不得作为身份根字段"
+    );
+
+    // 也不得留在账户行上。
+    //
+    // 原断言只看身份根，而身份根（`actor_identity`）从来没有 password 列 ——
+    // 口令一直在 `user` 上。于是这一半在代码完全没变的情况下就是绿的，而真正
+    // 的违反在它的视野之外。这正是这个仓库反复撞到的那类问题：守卫的作用域比
+    // 它声称的窄。
+    assert!(
+        !field_exists("user", "password"),
+        "口令不得是 `user` 的列 —— 它属于 credential，那里才有状态、轮换与吊销"
+    );
+
+    // 代码侧：账户模型不得再带口令字段。
+    //
+    // schema 删了列而 Rust 结构体留着字段的话，j11 会报出来；但反过来
+    // （结构体删了、查询里还手写 `password`）j11 看不见，所以这里直接查。
+    let user_model = read("src/models/user.rs");
+    assert!(
+        !user_model.contains("pub password_hash"),
+        "User 结构体仍带 password_hash —— 口令的唯一出入口应当是 services::credential"
+    );
+
+    // 凭证只能从一个地方读写。
+    //
+    // 口令散在四条路径上（注册 / 登录 / 首次设密 / 重置）时，漏改一处就是一个
+    // 谁都看不见的缺口 —— 例如吊销只清空了列。
+    let mut touchers: Vec<String> = Vec::new();
+    for (file, body) in sources() {
+        if file == "services/credential.rs" || file.starts_with("models/") {
+            continue;
+        }
+        let production = match body.find("#[cfg(test)]") {
+            Some(i) => &body[..i],
+            None => &body[..],
+        };
+        if production.contains("FROM credential") || production.contains("UPDATE credential") {
+            touchers.push(file);
+        }
+    }
+    assert!(
+        touchers.is_empty(),
+        "只有 services::credential 可以直接查 credential 表，这些地方绕过了它:\n  {}",
+        touchers.join("\n  ")
     );
 }
 
@@ -246,6 +289,41 @@ fn a4_actor_identity_is_not_binding() {
     };
     assert!(table_exists(binding), "缺少身份绑定表");
     assert_ne!(binding, identity_root(), "绑定与身份根不得是同一张表");
+
+    // 「不是同一张表」只排除了最粗的错法。真正要守的是：canonical binding 是
+    // 外部身份解析的**唯一事实源**，而不是一份事后补的影子记录。
+    //
+    // 此前 OAuth 先查 V1 的 `identity_provider`，命中就登录，再「顺手回填」
+    // binding，回填失败只记日志 —— binding 既不是前置条件，也不是事实源，
+    // 而这条断言当时照样通过。
+    assert!(
+        !table_exists("identity_provider"),
+        "V1 的 identity_provider 还在 —— 只要它存在，就可能被当成解析事实源"
+    );
+    let auth = read("src/services/auth.rs");
+    assert!(
+        auth.contains(".resolve_binding(&provider, &provider_subject)"),
+        "OAuth 解析必须经过 IdentityService::resolve_binding"
+    );
+    assert!(
+        !auth.contains("FROM identity_provider"),
+        "OAuth 解析仍在查 identity_provider"
+    );
+
+    // 同邮箱不得自动合并账户。
+    //
+    // 邮箱在两个身份域都「已验证」，只证明两边都认为它可达，**不证明两个域里的
+    // 主体是同一个** —— 邮箱会被回收、被转让、企业域名会换归属。
+    assert!(
+        auth.contains("An account with this email already exists"),
+        "同邮箱撞既有账户时必须拒绝并要求显式 Account Linking，不得自动挂接"
+    );
+    // 绑定写入失败不得被忽略。
+    assert!(
+        !auth.contains("Failed to create identity binding"),
+        "建立绑定失败只记日志 —— 首次联合登录必须因此失败，否则会留下一个\
+         「能登录但没有 canonical 绑定」的账号"
+    );
 }
 
 /// A5 · Human 与 AIActor 同为一等身份主体
@@ -406,7 +484,6 @@ fn b1_identity_key_not_derived_from_credential() {
 ///
 /// Credential 有独立生命周期：可创建、轮换、撤销、失效，而主体不因此消失。
 #[test]
-#[ignore = "V2 Stage 2 —— 无 credential 表，凭证散在 user.password / user_mfa / password_reset_token"]
 fn b2_identity_outlives_any_credential() {
     assert!(table_exists("credential"), "缺少 credential 表");
     for lifecycle in ["status", "revoked_at", "rotated_at"] {
@@ -415,19 +492,90 @@ fn b2_identity_outlives_any_credential() {
             "credential 缺少独立生命周期字段 `{lifecycle}`"
         );
     }
+
+    // 凭证指向身份根，而不是账户行。
+    //
+    // 指向 `user` 的话，凭证的生死就又和账户行绑在一起了 —— 那正是这条不变式
+    // 要拆开的东西。
+    let schema_sql = schema();
+    let field = schema_sql
+        .lines()
+        .find(|l| l.starts_with("DEFINE FIELD actor_identity_id ON credential"))
+        .unwrap_or("");
+    assert!(
+        field.contains("record<actor_identity>"),
+        "credential.actor_identity_id 必须是 record<actor_identity>，读到的是: {field}"
+    );
+
+    // 吊销必须是改状态，不是删行或清空密材。
+    //
+    // 清空之后「吊销过」与「从来没设过」在库里长得一模一样，而这两件事在安全上
+    // 完全不同：前者意味着有人曾经持有它。
+    let service = read("src/services/credential.rs");
+    assert!(
+        service.contains("revoked_at = $now") && service.contains("status = $revoked"),
+        "吊销口令应当更新 status 与 revoked_at"
+    );
+    assert!(
+        !service.contains("DELETE credential"),
+        "吊销不得删行 —— 删掉之后「吊销过」与「从未设过」无法区分"
+    );
 }
 
 /// B3 · Human 与 AIActor 产出同构的 AuthenticationResult
 ///
 /// 不同 Credential，相同 Actor Identity Contract。两条认证路径若各自产出
 /// 不同形状的结果，Actor-native 就只是数据建模。
+///
+/// 原断言只查「源码里有没有 `struct AuthenticationResult` 这串字符」。那不够：
+/// 定义一个没人用的类型就能让它变绿，而 Actor-native 照样只是说法。所以这里
+/// 还要查**两条路径都真的产出它**，以及它带着区分主体与凭证所必需的字段。
 #[test]
-#[ignore = "V2 Stage 2 —— 无统一 AuthenticationResult 类型"]
 fn b3_authentication_result_is_uniform() {
-    let found = sources()
+    let all = sources();
+    let defined = all
         .iter()
-        .any(|(_, b)| b.contains("struct AuthenticationResult"));
-    assert!(found, "缺少统一的 AuthenticationResult");
+        .any(|(_, b)| b.contains("pub struct AuthenticationResult"));
+    assert!(defined, "缺少统一的 AuthenticationResult");
+
+    // 定义里必须有这四个字段，否则「同构」退化成一个只装令牌的壳：
+    // 没有 actor_kind 就分不出主体类别，没有 credential_kind 就记不下
+    // 「用什么证明的」—— 而那正是审计归因要用的东西。
+    let model = read("src/models/authentication.rs");
+    for field in [
+        "pub actor_identity_id",
+        "pub actor_kind",
+        "pub credential_kind",
+        "pub token",
+    ] {
+        assert!(
+            model.contains(field),
+            "AuthenticationResult 缺少字段 `{field}`"
+        );
+    }
+
+    // 两条认证路径各自都要产出它。
+    //
+    // `auth.rs` 是 Human（口令 / MFA / 外部身份 / 邮件链接），
+    // `ai_actor.rs` 是 AIActor（Ed25519 挑战—应答）。任一侧退回自己的私有
+    // 结果类型，这条就该重新变红。
+    for (module, what) in [
+        ("src/services/auth.rs", "Human"),
+        ("src/services/ai_actor.rs", "AIActor"),
+    ] {
+        let body = read(module);
+        assert!(
+            body.contains("AuthenticationResult"),
+            "{module}（{what} 认证路径）没有产出 AuthenticationResult —— \
+             两条路径各自产出不同形状的结果时，Actor-native 只剩数据建模"
+        );
+    }
+
+    // 身份根地址不得是 user 行。归因到 `user:` 就把「谁」退回了账户实现。
+    assert!(
+        model.contains("actor_identity:"),
+        "AuthenticationResult 的文档里没有写明身份根形如 `actor_identity:xxx`"
+    );
 }
 
 /// B4a · Client Secret 哈希落库
@@ -562,6 +710,31 @@ fn c1_oidc_sub_is_not_a_profile_attribute() {
         hits_any(&["sub: user.email", "sub: user.username", "sub: claims.email"]),
         "C1: sub 不得由 email / username 派生 —— 它们可变，sub 必须稳定",
     );
+
+    // 上面那条只证明「没有出现几种错写法」。它曾经在 `sub` 取 `user.id` 的情况下
+    // 照样通过 —— 一个会随账户实现迁移而变的键，既不是 profile 属性，也不稳定。
+    //
+    // 这里查的是正面事实：ID Token 与 UserInfo 的 `sub` 都来自
+    // `stable_subject_of_user`，而那个函数读的是 `actor_identity.subject_key`。
+    let oidc = read("src/services/oidc.rs");
+    assert!(
+        oidc.contains("sub: subject,") && oidc.contains("sub: self.stable_subject_of_user("),
+        "OIDC 的 sub 必须取自身份根的稳定 subject，而不是 user / client / credential"
+    );
+    assert!(
+        oidc.contains("Ok(actor.subject_key().to_string())"),
+        "stable_subject_of_user 必须返回 actor_identity.subject_key"
+    );
+    // 而且签发 subject 必须经过闸门：被暂停的身份根不该还能从 userinfo 换出身份。
+    assert!(
+        oidc.contains(".authenticable_actor_of_user(&user_key)"),
+        "stable_subject_of_user 必须经过统一闸门，而不是只查身份根是否存在"
+    );
+    // 账户主键不得再出现在 sub 的构造里。
+    assert!(
+        !oidc.contains("sub: crate::utils::record_id::record_id_key_to_string("),
+        "OIDC 的 sub 仍然由 record id 构造 —— 那是资源标识，不是 Authentication Subject"
+    );
 }
 
 /// C2 · 同一 Actor 经不同 Client，`sub` 保持稳定
@@ -570,6 +743,15 @@ fn c2_sub_is_stable_across_clients() {
     assert_absent(
         hits_any(&["sub: format!(\"{}:{}\", client", "sub: client_scoped"]),
         "C2: sub 不得随 Client 变化",
+    );
+
+    // 正面依据：`sub` 的唯一来源函数不接受任何 client 参数，因此它在结构上
+    // 无法随 Client 变化。只查「没写 client_scoped」是挡不住别的写法的。
+    let oidc = read("src/services/oidc.rs");
+    let sig = "async fn stable_subject_of_user(&self, user: &User) -> Result<String>";
+    assert!(
+        oidc.contains(sig),
+        "stable_subject_of_user 的签名变了 —— 这条守卫靠它证明 subject 与 Client 无关"
     );
 }
 
@@ -815,8 +997,14 @@ fn e6_canonical_actor_ref_is_not_a_default_claim() {
 // 法源: Canonical Architecture §17 / §18, Engineering Delta §15 / §16
 
 /// F1 · Audit 稳定归因到 ActorIdentity
+///
+/// 归因主体要跨账户行的生命周期保持稳定，所以审计行指向身份根。
+///
+/// 这条还要守住一件更隐蔽的事：**被签名的值必须是行里存着的那个值。** 摘要一度
+/// 喂的是归一化后的 user key，而行里存的是解析后的身份根引用 —— 两个不同的
+/// 字符串。于是校验端点重算出来的摘要与存着的永远对不上，任何带归因的行都被报成
+/// 「链已断」。假阳性比没有更坏：它教人忽略这个告警。
 #[test]
-#[ignore = "V2 Stage 5 —— 审计仍以 user_id 归因"]
 fn f1_audit_attributes_to_actor() {
     let table = if table_exists("audit_event") {
         "audit_event"
@@ -826,6 +1014,55 @@ fn f1_audit_attributes_to_actor() {
     assert!(
         field_exists(table, "actor_identity_ref") || field_exists(table, "actor_identity_id"),
         "审计事件必须归因到 ActorIdentity，而不是 Human User"
+    );
+    assert!(
+        !field_exists(table, "user_id"),
+        "{table} 同时留着 `user_id` 与身份根引用 —— 只能有一个"
+    );
+
+    // 摘要输入的字段名必须与落库的列名一致。
+    //
+    // 名字一致不能证明取值一致，但名字不一致几乎总意味着取值不一致 —— 这条
+    // 缺陷正是这样产生的：写入侧叫 `user_id` 喂的是 user key，读取侧叫
+    // `user_id` 取的是身份根引用。
+    let digest = read("src/services/audit_integrity.rs");
+    assert!(
+        digest.contains("pub actor_identity_id: &'a str"),
+        "DigestInput 的归因字段应当与列名一致（actor_identity_id）"
+    );
+    assert!(
+        !digest.contains("pub user_id:"),
+        "DigestInput 仍有 user_id 字段 —— 它与落库列名不一致"
+    );
+
+    // 写入侧必须**先解析身份根、再算摘要**。
+    //
+    // 反过来的话，签的是一个不在行里的值，而校验只能读到行里的东西。
+    let logger = read("src/services/audit_logger.rs");
+    let resolve_at = logger
+        .find("resolve_actor_key(db")
+        .expect("写入路径没有解析身份根 —— 摘要会覆盖一个不在行里的值");
+    let hash_at = logger
+        .find("audit_integrity::event_hash")
+        .expect("写入路径没有算摘要");
+    assert!(
+        resolve_at < hash_at,
+        "必须先解析身份根再算摘要：顺序反了就等于对一个不在行里的值签名"
+    );
+
+    // 校验侧的投影必须取同一列，而且必须把「没有归因」变成空串。
+    //
+    // `type::string(NONE)` 是字符串 `"NONE"`，不是 null。少了这个分支，一条
+    // 未归因的事件在校验侧看起来像归因到了名叫 `NONE` 的主体，而写入侧喂的是
+    // 空串 —— 任何含未归因事件的链都会被报成已断，而第一条事件通常正是未归因的。
+    let verify = read("src/routes/audit.rs");
+    assert!(
+        verify.contains("ELSE type::string(actor_identity_id) END AS actor_identity_id"),
+        "完整性校验必须把归因列投影成字符串再喂进摘要"
+    );
+    assert!(
+        verify.contains("IF actor_identity_id = NONE THEN ''"),
+        "投影必须把 NONE 明确变成空串 —— `type::string(NONE)` 给的是字符串 \"NONE\""
     );
 }
 
@@ -1041,7 +1278,6 @@ fn h1_retired_subject_is_not_reusable() {
 /// 法源: 06 §6「Profile 描述 Actor，Subject 标识 Actor」。
 /// Display Name、Avatar、Locale 变化不得改变身份。
 #[test]
-#[ignore = "V2 Stage 1 —— user_profile 通过 user_id 挂在身份根上，无独立 actor 引用"]
 fn h2_actor_identity_is_not_profile() {
     assert!(table_exists("user_profile") || table_exists("actor_profile"));
     let profile = if table_exists("actor_profile") {
@@ -1053,6 +1289,27 @@ fn h2_actor_identity_is_not_profile() {
         field_exists(profile, "actor_identity_id"),
         "Profile 必须引用 ActorIdentity，而不是复用身份根主键"
     );
+
+    // 引用字段不得同时留着旧名字。
+    //
+    // 这里曾经是 `user_id TYPE record<actor_identity>` —— 指向是对的，名字在
+    // 说谎。两个名字并存比单独一个错名字更糟：读代码的人无法知道哪个是真的，
+    // 而查询会随手挑一个。
+    assert!(
+        !field_exists(profile, "user_id"),
+        "{profile} 同时留着 `user_id` 与 `actor_identity_id` —— 只能有一个"
+    );
+
+    // Rust 侧与 wire 侧都要跟着改名，否则 API 仍然对外宣称这是 user 的属性。
+    let model = read("src/models/user_profile.rs");
+    assert!(
+        model.contains("pub actor_identity_id: Thing") && !model.contains("pub user_id: Thing"),
+        "UserProfile 的外键字段名没有跟 schema 一起改"
+    );
+    assert!(
+        !model.contains("pub user_id: String"),
+        "UserProfileResponse 仍然对外把这个字段叫 user_id"
+    );
 }
 
 /// H3 · Identity Binding ≠ Credential
@@ -1061,7 +1318,6 @@ fn h2_actor_identity_is_not_profile() {
 /// 并不会因此成为 SoulAuth Actor Credential」。Binding 解析主体对应关系，
 /// Federated Authentication 验证本次外部认证结果 —— 两个问题。
 #[test]
-#[ignore = "V2 Stage 1/2 —— 无 credential 表，binding 与 credential 尚未分开"]
 fn h3_binding_is_not_credential() {
     assert!(table_exists("credential"), "缺少 credential 表");
     let binding = if table_exists("identity_binding") {
@@ -2893,6 +3149,77 @@ fn j14_readme_test_counts_are_real() {
             assert_eq!(n, actual, "{doc} 声称单测 {n} 项，实际 {actual} 项");
         }
     }
+
+    // 横幅上另外两个数字也是手写的，而且漂得更厉害：这条守卫只盯单测数的那段
+    // 时间里，不变式数停在 71（真值 76）、集成断言数停在 351（真值 387）。
+    // 守卫的作用域比它声称的窄 —— 这个仓库反复撞到的那类问题。
+    // 只数**行首**的 `#[test]`：文档注释与字符串里也会出现这几个字符。
+    let invariants = read("tests/conformance.rs")
+        .lines()
+        .filter(|l| l.trim() == "#[test]")
+        .count();
+    let min_pass: usize = read("tests/integration.sh")
+        .lines()
+        .find_map(|l| l.strip_prefix("MIN_PASS=")?.trim().parse().ok())
+        .expect("integration.sh 里没有 MIN_PASS=");
+
+    // 数字可能在 needle 前（"76 architecture invariants"）也可能在后
+    // （"架构不变式 76 条"），所以两边都找，取离 needle 最近的那个。
+    fn number_next_to(line: &str, needle: &str) -> Option<usize> {
+        let at = line.find(needle)?;
+        // needle 前面：去掉紧邻的空格与中点，然后倒着读数字。
+        let head = line[..at].trim_end_matches([' ', '·']);
+        let before: String = head
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if !before.is_empty() {
+            return before.parse().ok();
+        }
+        // needle 后面：跳过空格，读数字。
+        let after: String = line[at + needle.len()..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        after.parse().ok()
+    }
+
+    for (doc, inv_needle, it_needle) in [
+        ("README.md", "architecture invariants", "assertions"),
+        ("README.zh-CN.md", "架构不变式", "项断言"),
+        ("CONTRIBUTING.md", "conformance invariants", "assertions"),
+        ("CONTRIBUTING.zh-CN.md", "条一致性不变式", "项断言"),
+    ] {
+        let body = read(doc);
+        for line in body.lines() {
+            if line.contains(inv_needle) {
+                // 没有数字的那一行（例如目录里的说明「architecture invariants
+                // asserted against…」）不是计数，跳过。
+                let Some(n) = number_next_to(line, inv_needle) else {
+                    continue;
+                };
+                assert_eq!(
+                    n, invariants,
+                    "{doc} 声称不变式 {n} 条，tests/conformance.rs 里实际 {invariants} 条"
+                );
+            }
+            let mentions_integration = line.contains("integration") || line.contains("集成");
+            if mentions_integration && line.contains(it_needle) {
+                let Some(n) = number_next_to(line, it_needle) else {
+                    continue;
+                };
+                assert_eq!(
+                    n, min_pass,
+                    "{doc} 声称集成断言 {n} 项，tests/integration.sh 的 MIN_PASS 是 {min_pass}"
+                );
+            }
+        }
+    }
 }
 
 /// J15 · 中英两份部署文档的结构必须一致
@@ -3403,6 +3730,288 @@ fn j20_readme_api_surface_table_matches_the_contract() {
             claimed_total, total,
             "{doc} 的接口面表合计 {claimed_total} 个 operation，契约是 {total} 个"
         );
+    }
+}
+
+/// J21 · Human 的认证主体是身份根，不是账户行
+///
+/// 这条守的是整份架构最核心的那个断点。`actor_identity` 这套新本体建起来之后，
+/// 很长一段时间里它并没有进入 Human 的认证与协议路径：
+///
+/// * 会话 JWT 的 `sub` 是 user 表主键；
+/// * OIDC ID Token 与 UserInfo 的 `sub` 也是 user.id；
+/// * 提取器最终加载并返回的仍然是 `User`；
+/// * `subject_key` 除了创建、模型和 Actor 管理响应之外几乎没有被消费。
+///
+/// 于是两类主体的令牌语义并不对称：AIActor 的 `sub` 是 actor key，Human 的是
+/// user key。而「Human 与 AIActor 进入同一套 Actor Identity Contract」这句话，
+/// 在代码里没有任何对应物 —— 同时 **a5 / c1 / c2 这几条当时全是绿的**。
+#[test]
+fn j21_human_authenticates_as_an_actor() {
+    // ① 会话 JWT 的 sub 是身份根。
+    let auth = read("src/services/auth.rs");
+    assert!(
+        auth.contains("sub: record_key(&actor_ref),"),
+        "会话 JWT 的 sub 必须是身份根的 key，不是 user 行主键"
+    );
+
+    // ② 提取器先解析身份根，再取账户扩展。
+    let jwt = read("src/utils/jwt.rs");
+    let gate_at = jwt
+        .find(".authenticable_actor(")
+        .expect("提取器没有经过统一闸门");
+    let load_at = jwt
+        .find("load_user_from_actor(&db")
+        .expect("提取器没有按身份根加载账户扩展");
+    assert!(
+        gate_at < load_at,
+        "必须先过闸门再取账户行：反过来就是旧本体 —— 账户行成了认证主体"
+    );
+    assert!(
+        !jwt.contains("fn load_user_from_claims"),
+        "`load_user_from_claims` 还在 —— 它直接拿 claims.sub 当 user 主键查"
+    );
+
+    // ③ 每一条认证路径都要经过同一个闸门。
+    //
+    // 漏掉任意一条的后果不是「少查一次」：暂停一个 Human 的身份根时，那条路径
+    // 仍然放行，而运维以为已经挡住了。
+    for (file, what) in [
+        ("src/services/auth.rs", "密码登录 / MFA / OAuth 回调"),
+        ("src/utils/jwt.rs", "Bearer 提取器"),
+        ("src/services/oidc.rs", "OIDC refresh / userinfo"),
+        ("src/routes/oidc.rs", "OIDC authorize"),
+    ] {
+        let body = read(file);
+        assert!(
+            body.contains("authenticable_actor"),
+            "{file}（{what}）没有经过统一的身份根闸门"
+        );
+    }
+
+    // ④ 闸门本身必须 fail closed：三个判据齐备。
+    let identity = read("src/services/identity.rs");
+    for needle in [
+        "if actor.actor_kind_parsed() != Some(expect)",
+        "ActorStatus::Suspended => return Err(AuthError::AccountSuspended)",
+        "ActorStatus::Retired => return Err(AuthError::AccountDeleted)",
+    ] {
+        assert!(
+            identity.contains(needle),
+            "闸门缺少判据：`{needle}` —— 身份根存在、种类相符、状态允许，三者缺一不可"
+        );
+    }
+}
+
+/// J22 · 会话记得自己是怎样建立的
+///
+/// 会话此前只记「谁、何时、从哪来」。缺了认证来源，几个本该能回答的问题就回答
+/// 不了：这个会话是口令建立的还是过了 MFA？吊销某一枚凭证应该打掉哪些会话？
+/// 而 OIDC 的 `auth_time` 只能去拿 `user.last_login_at` —— 一个会被**后来的**
+/// 登录覆盖的字段，于是旧会话签出的 ID Token 可能带一个比它自己更晚的认证时间。
+#[test]
+fn j22_session_records_how_it_was_established() {
+    for field in ["credential_kind", "credential_label", "authenticated_at"] {
+        assert!(
+            field_exists("session", field),
+            "session 缺少认证来源字段 `{field}`"
+        );
+    }
+
+    // `auth_time` 必须取自建立该会话的那次认证。
+    let oidc = read("src/services/oidc.rs");
+    assert!(
+        oidc.contains("authenticated_at_of_session(&sid)"),
+        "OIDC 的 auth_time 必须取自建立该会话的认证事实"
+    );
+    assert!(
+        !oidc.contains("auth_time: user.last_login_at"),
+        "auth_time 仍然取 user.last_login_at —— 那个字段会被后来的登录覆盖"
+    );
+
+    // 吊销一把密钥要打掉由它建立的会话，而不是这个主体的全部会话。
+    let ai = read("src/services/ai_actor.rs");
+    assert!(
+        ai.contains("AND credential_label = $label"),
+        "吊销密钥必须按凭证标签精确撤销会话 —— 多钥匙的意义正是各自独立失效"
+    );
+}
+
+/// J23 · checkpoint 必须锚在链上真实存在的那一节
+///
+/// 只验签名是不够的，而这正是 checkpoint 存在的全部理由。少了锚点比对，拥有
+/// 数据库写权限的人可以：保留一条旧的、合法签名的 checkpoint，重写整条链并重算
+/// 每一行的 `event_hash` —— 新链自身自洽，旧签名依然验得过，于是系统报告
+/// 「完好」。它要防的恰恰是这件事。
+#[test]
+fn j23_checkpoints_are_anchored_to_the_chain() {
+    let verify = read("src/routes/audit.rs");
+    assert!(
+        verify.contains("anchors.insert((chain_id.clone(), seq)"),
+        "走链时必须记下每一节的 (chain_id, seq) → event_hash，供锚点比对"
+    );
+    assert!(
+        verify.contains("anchors.get(&(chain_of_cp.clone(), seq_to))"),
+        "checkpoint 必须与链上 seq_to 那一节的实际 event_hash 比对"
+    );
+    assert!(
+        verify.contains("checkpoint_anchor"),
+        "锚点对不上时必须报成断链 —— 那是篡改证据，不是「少一个可验 checkpoint」"
+    );
+}
+
+/// J24 · 审计丢事件必须可观察
+///
+/// 模块文档一度写着「绝不丢事件」。那句话是错的：队列满、重试用尽、排空超时都会
+/// 丢。错得有代价 —— 读者据此以为身份与凭证管理类操作的审计是可靠的。
+///
+/// 更严重的是链头读取：一次数据库报错曾被 `.unwrap_or_default()` 当成「空表」，
+/// 于是 seq 从 1 重新开始，撞上唯一索引，这个进程此后**再也写不进任何审计事件**。
+#[test]
+fn j24_audit_loss_is_observable() {
+    let logger = read("src/services/audit_logger.rs");
+
+    assert!(
+        !logger.contains("**绝不丢事件**"),
+        "模块文档仍然声称「绝不丢事件」—— 队列满、重试用尽、排空超时都会丢"
+    );
+
+    // 链头读失败必须与「表里没有」分开。
+    assert!(
+        logger.contains(
+            "async fn load_chain_head(db: &Database, chain_id: &str) -> Option<ChainHead>"
+        ),
+        "load_chain_head 必须能表达「读不出来」，而不是把报错当成空表"
+    );
+    assert!(
+        logger.contains("None => mark_dropped(\"chain head unavailable\""),
+        "链头读不出来时必须放弃这次写入并标记不健康 —— 从创世重写会撞唯一索引"
+    );
+
+    // 每一个丢弃点都要计数。
+    assert!(
+        logger.matches("mark_dropped(").count() >= 5,
+        "丢弃点没有全部计数：队列满 / writer 停止 / 重试用尽 / 排空超时 / 链头不可用"
+    );
+
+    // 健康状态必须从接口看得到。
+    let audit_routes = read("src/routes/audit.rs");
+    assert!(
+        audit_routes.contains("audit_writes_healthy"),
+        "审计写入是否健康必须从 system-health 暴露出来"
+    );
+}
+
+/// J25 · 迁移演练取的 SQL 块，必须与 CHANGELOG 里的块一一对上
+///
+/// `tests/migration_walkthrough.sh` 按「第 N 步的第 K 个 ```sql 块」从 CHANGELOG.md
+/// 提取 SQL 执行。这比抄一份进脚本好 —— 文档与脚本不会各说各话 —— 但它引入了
+/// 一种新的静默失败：有人给第 8 步**前面**再加一个代码块，脚本取到的就是另一段
+/// SQL，而演练照样绿。
+///
+/// 所以这里把脚本里每一个 `changelog_sql N K` 调用都对着 CHANGELOG 数一遍：
+/// 第 N 步必须存在，且至少有 K 个 sql 块。块多了（有人新加了未被演练的 SQL）
+/// 也要报：那一块同样是「未经验证的迁移 SQL」。
+#[test]
+fn j25_migration_walkthrough_reads_the_blocks_it_thinks_it_reads() {
+    let script = read("tests/migration_walkthrough.sh");
+    let changelog = read("CHANGELOG.md");
+
+    // 只看第一个（Unreleased 的）Upgrade steps 节。
+    let section = changelog
+        .split_once("### Upgrade steps")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("CHANGELOG 里没有 Upgrade steps");
+
+    // 每一步 → 它的 sql 块数
+    let mut blocks_per_step: Vec<(String, usize)> = Vec::new();
+    let mut current: Option<String> = None;
+    let mut in_sql = false;
+    for line in section.lines() {
+        // 行首 `N. **` 开一步
+        let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty() && line[digits.len()..].starts_with(". **") {
+            current = Some(digits.clone());
+            blocks_per_step.push((digits, 0));
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```sql") {
+            in_sql = true;
+            if current.is_some() {
+                if let Some(last) = blocks_per_step.last_mut() {
+                    last.1 += 1;
+                }
+            }
+        } else if trimmed.starts_with("```") && in_sql {
+            in_sql = false;
+        }
+    }
+    assert!(
+        blocks_per_step.len() >= 5,
+        "只解析出 {} 个升级步骤 —— 解析逻辑失效了",
+        blocks_per_step.len()
+    );
+
+    // 脚本里的每个 changelog_sql N K
+    let mut wanted: Vec<(String, usize)> = Vec::new();
+    for line in script.lines() {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("changelog_sql ") {
+            let at = from + rel + "changelog_sql ".len();
+            let rest = &line[at..];
+            let mut parts = rest.split_whitespace();
+            let (Some(n), Some(k)) = (parts.next(), parts.next()) else {
+                break;
+            };
+            // 脚本里写的是 `changelog_sql 4 3)"`：K 后面紧跟 `)"`。只留数字。
+            let k: usize = k
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0);
+            wanted.push((n.to_string(), k));
+            from = at;
+        }
+    }
+    assert!(
+        wanted.len() >= 6,
+        "脚本里只找到 {} 处 changelog_sql 调用 —— 解析逻辑失效了",
+        wanted.len()
+    );
+
+    for (step, k) in &wanted {
+        let have = blocks_per_step
+            .iter()
+            .find(|(s, _)| s == step)
+            .map(|(_, n)| *n)
+            .unwrap_or_else(|| panic!("演练脚本引用了 CHANGELOG 里不存在的第 {step} 步"));
+        assert!(
+            *k >= 1 && *k <= have,
+            "演练脚本要第 {step} 步的第 {k} 个 sql 块，但 CHANGELOG 里那一步只有 {have} 个"
+        );
+    }
+
+    // 反向：CHANGELOG 里每一个 sql 块都要被演练取到过，否则它就是未经验证的。
+    // 例外：第 5 步的第 2 块（重新链化，刻意的一次性破坏性操作，演练不执行）。
+    for (step, have) in &blocks_per_step {
+        for k in 1..=*have {
+            if step == "5" && k == 2 {
+                continue;
+            }
+            let covered = wanted.iter().any(|(s, kk)| s == step && *kk == k);
+            // 第 4 步第 2 块是两条计数查询，演练用自己的 count() 替代了它。
+            if step == "4" && k == 2 {
+                continue;
+            }
+            assert!(
+                covered,
+                "CHANGELOG 第 {step} 步的第 {k} 个 sql 块没有被 migration_walkthrough.sh 执行 \
+                 —— 它是一段未经验证的迁移 SQL"
+            );
+        }
     }
 }
 

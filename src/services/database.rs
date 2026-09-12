@@ -994,6 +994,35 @@ impl Database {
         }
     }
 
+    /// 在一个数据库事务里执行一组语句。
+    ///
+    /// # 为什么必须有它
+    ///
+    /// 身份对象从来不是一行：建一个 Human 要写 `actor_identity`、`human_account`
+    /// 与 `user` 三张表，社交首登还要加 `identity_binding`，注册还要加 `credential`。
+    /// 这些写入此前是逐条发出的，任何一步失败都会留下半成品：
+    ///
+    /// * 没有账户扩展的身份根（闸门会拒绝它认证，但它占着 subject_key）；
+    /// * 没有 canonical 绑定却已经能登录的账号；
+    /// * 没有凭证的账号（登录永远失败，且无法重新注册 —— 邮箱已被占用）。
+    ///
+    /// 这些状态不会报错，它们只是**存在**，然后在某个人试图登录的那天表现为
+    /// 「这个账号坏了」。
+    ///
+    /// # 语义
+    ///
+    /// SurrealDB 在事务内任一语句出错时取消整个事务，所以这里只需要把
+    /// `BEGIN` / `COMMIT` 包上，并让 `check()` 把错误抛出来。
+    pub async fn transaction(
+        &self,
+        op: &str,
+        statements: &str,
+        bindings: JsonValue,
+    ) -> Result<surrealdb::IndexedResults> {
+        let sql = format!("BEGIN TRANSACTION;\n{statements}\nCOMMIT TRANSACTION;");
+        self.raw_query(op, &sql, bindings).await
+    }
+
     pub async fn raw_query_no_bind(
         &self,
         op: &str,

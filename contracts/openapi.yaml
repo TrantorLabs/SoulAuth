@@ -19,7 +19,7 @@
 openapi: 3.1.0
 info:
   title: SoulAuth
-  version: "0.1.0"
+  version: "0.2.0"
   description: >-
     Actor-native identity and authentication infrastructure.
     Endpoint surface only; payload schemas are not yet frozen.
@@ -1185,6 +1185,13 @@ components:
       - permissions
       - assigned_at
       type: object
+    SetActorStatusRequest:
+      properties:
+        status:
+          type: string
+      required:
+      - status
+      type: object
     SecurityIncident:
       properties:
         affected_user:
@@ -1366,7 +1373,7 @@ components:
           type: object
         risk_score:
           type: integer
-        user_id:
+        actor_identity_id:
           type: string
       required:
       - ip_address
@@ -1519,10 +1526,10 @@ components:
           type: string
         last_activity:
           type: object
-        user_id:
+        actor_identity_id:
           type: string
       required:
-      - user_id
+      - actor_identity_id
       - email
       - activity_count
       - last_activity
@@ -1545,11 +1552,11 @@ components:
           type: object
         user_agent:
           type: string
-        user_id:
+        actor_identity_id:
           type: string
       required:
       - id
-      - user_id
+      - actor_identity_id
       - action
       - category
       - ip_address
@@ -1706,13 +1713,13 @@ components:
           type: string
         updated_at:
           type: object
-        user_id:
+        actor_identity_id:
           type: string
         website:
           type: string
       required:
       - id
-      - user_id
+      - actor_identity_id
       - created_at
       - updated_at
       type: object
@@ -2032,6 +2039,39 @@ paths:
         required: true
         schema:
           type: string
+  /api/actors/:actor_id/status:
+    put:
+      tags:
+      - AI Actors
+      operationId: actors_set_status
+      description: >-
+        Change an AI actor's identity status. `suspended` is reversible; `retired` is not,
+        and a retired subject must never be reused. Either one immediately ends every
+        session that subject holds — a status change that leaves tokens working is not a
+        status change.
+      description_zh: >-
+        改变一个 AIActor 的身份状态。`suspended` 可逆；`retired` 不可逆，且退役的
+        subject 不得复用。两者都会立刻结束该主体的全部会话 —— 状态改了而令牌还能用，
+        等于状态没改。
+      security:
+      - bearerAuth: []
+      x-required-permissions:
+      - soulauth:actors.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetActorStatusRequest'
+      responses:
+        '200':
+          description: OK
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/actors/authenticate:
     post:
       tags:

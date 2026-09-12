@@ -1,6 +1,6 @@
 [package]
 name = "soulauth"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # 整套闸门实际验过的版本，同时也是 rust-toolchain.toml 钉的那个。
 # 写在这里是为了让用更老工具链的人拿到一句明确的错误，而不是一堆解析失败。

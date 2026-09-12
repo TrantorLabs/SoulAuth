@@ -39,11 +39,70 @@ pub struct DigestInput<'a> {
     pub action: &'a str,
     pub category: &'a str,
     pub status: &'a str,
-    pub user_id: &'a str,
+    /// 归因到的身份根地址（`actor_identity:xxx`），无归因时是空串。
+    ///
+    /// 必须是**行里存着的那个值**：校验只能读到行里的东西，对一个不在行里的值
+    /// 签名等于没签。
+    pub actor_identity_id: &'a str,
     pub ip_address: &'a str,
     pub user_agent: &'a str,
     pub details_json: &'a str,
     pub timestamp: i64,
+}
+
+/// 把 `details` 序列化成**与键顺序、与 null 无关**的规范形式。
+///
+/// 摘要两侧拿到的不是同一个对象：写入侧序列化的是内存里刚构造出来的 `Value`，
+/// 校验侧序列化的是数据库还给它的那一个。两者之间有两处会不一致，而任一处
+/// 都足以让一条完好的链被报成「已断」：
+///
+/// * **键顺序。** `serde_json` 是否保持插入顺序取决于 feature，而数据库用什么
+///   顺序把对象还给你根本不在我们控制范围内。这里递归排序键，于是顺序不再参与。
+/// * **null。** `credential_label` 这类可空字段写进去是 `null`，而数据库可能
+///   干脆不存这个键 —— 读回来就少一项。这里一律丢掉值为 null 的键，
+///   写入侧与校验侧因此看到同一组键。
+///
+/// 代价是「某个键的值从 null 变成缺失」不会被摘要发现。那不是损失：两者表达的
+/// 是同一件事，而把它们当成不同会让链在完全没有人动过数据的情况下断掉。
+pub fn canonical_json(value: &serde_json::Value) -> String {
+    fn write(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<&String> = map
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, _)| k)
+                    .collect();
+                keys.sort();
+                out.push('{');
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::Value::String((*k).clone()).to_string());
+                    out.push(':');
+                    write(&map[*k], out);
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(items) => {
+                // 数组顺序是数据本身，不排序。
+                out.push('[');
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(v, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+
+    let mut out = String::new();
+    write(value, &mut out);
+    out
 }
 
 /// 计算一条事件的 `event_hash`（小写 hex）。
@@ -61,7 +120,7 @@ pub fn event_hash(input: &DigestInput<'_>) -> String {
         input.action,
         input.category,
         input.status,
-        input.user_id,
+        input.actor_identity_id,
         input.ip_address,
         input.user_agent,
         input.details_json,
@@ -83,6 +142,7 @@ pub fn event_hash(input: &DigestInput<'_>) -> String {
 /// 私钥来自 `AUDIT_INTEGRITY_KEY`，与 `JWT_SECRET`、`MFA_SECRET_ENCRYPTION_KEY`
 /// 是三把不同的钥匙。共用一把意味着轮换其中一个用途会连带作废另外两个 ——
 /// 而审计完整性恰恰是最不该被「顺手轮换」破坏的那一个。
+#[derive(Clone)]
 pub struct CheckpointSigner {
     key: SigningKey,
 }
@@ -248,12 +308,41 @@ mod tests {
             action,
             category: "Authentication",
             status: "Success",
-            user_id: "abc",
+            actor_identity_id: "actor_identity:abc",
             ip_address: "203.0.113.7",
             user_agent: "curl/8.0",
             details_json: "{}",
             timestamp: 1_756_694_400,
         }
+    }
+
+    #[test]
+    fn canonical_json_ignores_key_order() {
+        // 同一组键值，两种插入顺序，必须给出同一个串 —— 否则数据库用别的顺序
+        // 把对象还回来，摘要就对不上。
+        let a = serde_json::json!({"b": 1, "a": "x", "c": true});
+        let b = serde_json::json!({"c": true, "a": "x", "b": 1});
+        assert_eq!(canonical_json(&a), canonical_json(&b));
+        assert_eq!(canonical_json(&a), r#"{"a":"x","b":1,"c":true}"#);
+    }
+
+    #[test]
+    fn canonical_json_drops_nulls() {
+        // 「值为 null」与「键不存在」必须等价：写进去是 null 的字段，
+        // 数据库未必存下来。
+        let with_null = serde_json::json!({"a": 1, "b": serde_json::Value::Null});
+        let without = serde_json::json!({"a": 1});
+        assert_eq!(canonical_json(&with_null), canonical_json(&without));
+    }
+
+    #[test]
+    fn canonical_json_keeps_array_order_and_nests() {
+        // 数组顺序是数据本身，不能排序；嵌套对象要一起规范化。
+        let v = serde_json::json!({"list": [3, 1, 2], "inner": {"z": 1, "a": 2}});
+        assert_eq!(
+            canonical_json(&v),
+            r#"{"inner":{"a":2,"z":1},"list":[3,1,2]}"#
+        );
     }
 
     #[test]

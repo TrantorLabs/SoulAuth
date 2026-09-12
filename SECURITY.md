@@ -22,21 +22,48 @@ redo the analysis:
 | `atomic-polyfill` | RUSTSEC-2023-0089 (unmaintained) | Transitive. |
 | `proc-macro-error` | RUSTSEC-2024-0370 (unmaintained) | Build-time only; never reaches the runtime. |
 
+### Advisories that were fixed rather than ignored
+
+The table above is for advisories with no reachable fix. When a fixed version exists and
+fits the existing constraints, the lock file is bumped instead — the ignore list must not
+grow just because an entry is inconvenient.
+
+| Dependency | Advisory | What was done |
+|---|---|---|
+| `ammonia 4.1.2` (via `surrealdb-core`) | RUSTSEC-2026-0193, RUSTSEC-2026-0213 (XSS in HTML sanitiser) | Bumped to 4.1.4 in `Cargo.lock`. SurrealDB only calls it from the SurrealQL `string::html::*` functions, which no query in this project uses, so the flaw was not reachable here — but the fix was free and the dependency tree got eight crates smaller. |
+
 ### Why `axum` / `jsonwebtoken` aren't upgraded to clear `ring 0.16`
 
 `ring 0.16` comes from `jsonwebtoken 8`, and `hyper 0.14` from `axum 0.6`. Upgrading
 means going axum 0.6→0.8 (`Server` removed, `TypedHeader` moved out, extractor changes)
 and jsonwebtoken 8→10, while the table above shows both advisories are unreachable here.
 The risk of the change outweighs what it buys, so this is a **deliberate choice**, not an
-oversight. If your compliance process needs `cargo audit` to come back empty, use
-`cargo audit --ignore` together with the table above.
+oversight.
+
+**CI enforces this.** The `dependency advisories` job runs `cargo audit` with exactly the
+seven advisories above ignored, one `--ignore` flag each. Anything outside that list turns
+the job red, so a newly published advisory cannot hide behind the old reasoning. The job
+also stores the resolved dependency tree as a build artifact — going to look at the lock
+file's history after an advisory lands is too late.
+
+The job distinguishes a real advisory from a tooling failure. The advisory database is
+maintained by others and its format moves: an entry written with CVSS 4.0 made an older
+`cargo-audit` fail to parse the whole database, which reads like "the dependencies are
+unsafe" when it means "the tool is out of date". That case fails the job with a message
+naming the cause and the fix — bump the pinned `cargo-audit` version — so nobody reads a
+format change as a security regression.
 
 ## Known limitations
 
-- **The database connection only authenticates as root.** The code goes through
-  `surrealdb::opt::auth::Root`; there is no branch for namespace-level or
-  database-level login. Until there is, keep SurrealDB on a private network, don't
-  reuse the password anywhere else, and use `https://` across network segments.
+- **The database login is namespace- or database-scoped in production, and the
+  connection must be encrypted.** Both are checked at startup: if `DATABASE_URL` is not a
+  loopback address, the process refuses to start on plaintext `http://`/`ws://`, and
+  refuses to start with `DATABASE_USER=root`. On loopback neither is enforced, which is
+  what keeps the quickstart to four variables.
+
+  The reason these are gates rather than advice: the database holds every password hash,
+  every session fingerprint and the OIDC signing key, so any hop on a plaintext link has
+  all of them, and `root` turns one injection into whole-cluster access.
 - **Registration returns 409 for a duplicate address**, so it can be used to probe
   whether an address is already registered. Password reset and resending a verification
   mail deliberately don't do this — both always return 200. That is a trade between

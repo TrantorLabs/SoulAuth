@@ -15,7 +15,7 @@ use axum::{
     extract::{ConnectInfo, Extension, Path},
     http::HeaderMap,
     response::Json,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -59,9 +59,17 @@ pub fn router() -> Router {
             "/:actor_id/credentials/:credential_id",
             delete(revoke_credential),
         )
+        // 生命周期（需权限）
+        .route("/:actor_id/status", put(set_status))
 }
 
 // ───────────────────────── 线上形状 ─────────────────────────
+
+#[derive(Deserialize)]
+struct SetActorStatusRequest {
+    /// `active` | `suspended` | `retired`
+    status: String,
+}
 
 #[derive(Serialize)]
 struct ActorResponse {
@@ -281,6 +289,37 @@ async fn revoke_credential(
     Ok(Json(serde_json::json!({ "revoked": true })))
 }
 
+/// 改变一个 AIActor 的身份状态。
+///
+/// `suspended` 可逆，`retired` 不可逆。两者都会立刻断掉该主体现有的全部会话 ——
+/// 状态改了而令牌还能用，等于状态没改。
+async fn set_status(
+    user: AuthedUser,
+    Extension(db): Extension<Arc<Database>>,
+    Extension(actors): Extension<Arc<AiActorService>>,
+    Path(actor_id): Path<String>,
+    Json(request): Json<SetActorStatusRequest>,
+) -> Result<Json<serde_json::Value>, AuthError> {
+    let user_id = user.id()?;
+    require_permission!(&db, &user_id, ACTORS_WRITE);
+
+    let status = match request.status.as_str() {
+        "active" => crate::models::actor_identity::ActorStatus::Active,
+        "suspended" => crate::models::actor_identity::ActorStatus::Suspended,
+        "retired" => crate::models::actor_identity::ActorStatus::Retired,
+        other => {
+            return Err(AuthError::ValidationError(format!(
+                "Unknown actor status `{other}`; expected active, suspended or retired"
+            )))
+        }
+    };
+
+    actors
+        .set_actor_status(&strip_actor_prefix(&actor_id), status)
+        .await?;
+    Ok(Json(serde_json::json!({ "status": status.as_str() })))
+}
+
 // ───────────────────────── 认证 ─────────────────────────
 
 /// 第一步：领一枚一次性挑战。
@@ -332,9 +371,15 @@ async fn authenticate(
                     ip.clone(),
                     ua.clone(),
                 )
+                // 归因走**外键**，不是 details 里的一个字符串。
+                //
+                // 以前只把 actor id 塞进自由格式的 details，于是
+                // `user_activity.actor_identity_id` 是 NONE：按主体查它的认证
+                // 历史做不到，而 details 里那个值是可变的弱约束文本。
+                .with_actor(session.actor_identity_id.clone())
                 .with_details(serde_json::json!({
                     "subject_type": "agent",
-                    "actor_id": session.actor_id,
+                    "credential_kind": session.credential_kind.as_str(),
                     "credential_label": session.credential_label,
                 })),
             );
@@ -342,9 +387,11 @@ async fn authenticate(
             Ok(Json(AuthenticateResponse {
                 token: session.token,
                 token_type: "Bearer",
-                actor_id: session.actor_id,
+                actor_id: session.actor_identity_id,
                 expires_at: session.expires_at,
-                credential_label: session.credential_label,
+                // wire 形状不变（`j8` 冻结了它）：统一类型里这个字段是 Option，
+                // 而 AIActor 一定带标签，所以这里取出来是安全的。
+                credential_label: session.credential_label.unwrap_or_default(),
             }))
         }
         Err(e) => {
@@ -358,7 +405,10 @@ async fn authenticate(
                 )
                 .with_details(serde_json::json!({
                     "subject_type": "agent",
-                    "actor_id": request.actor_id,
+                    // `claimed_` 前缀是刻意的：这个值来自**未经验证的请求参数**。
+                    // 认证失败时我们并不知道对方是谁，只知道它声称自己是谁。
+                    // 把它叫 `actor_id` 会让读审计的人把它当成一条归因。
+                    "claimed_actor_id": request.actor_id,
                     "reason": e.code(),
                 })),
             );

@@ -104,13 +104,13 @@ groups:
       - name: DATABASE_URL
         required: false
         default: "127.0.0.1:8000"
-        description: "Prefix with https:// for TLS. Plaintext to a non-loopback address logs a warning at startup."
-        description_zh: "加 https:// 前缀走 TLS。明文指向非环回地址会在启动时告警。"
+        description: "Prefix with https:// or wss:// for TLS. Off loopback plaintext is refused at startup, not warned about."
+        description_zh: "加 https:// 或 wss:// 前缀走 TLS。非环回时明文连接会被启动闸门拒绝，而不是只告警。"
       - name: DATABASE_USER
         required: false
         default: "root"
-        description: "Production should use a dedicated account scoped to the namespace and database, not root."
-        description_zh: "生产上应使用限定在 ns/db 内的专用账号。"
+        description: "Must not be root off loopback: the process refuses to start. Use an account scoped to the namespace and database."
+        description_zh: "非环回时不得为 root，否则进程拒绝启动。请用限定在 ns/db 内的专用账号。"
       - name: DATABASE_PASS
         required: false
         default: "root"

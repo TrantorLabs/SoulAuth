@@ -34,6 +34,7 @@ use surrealdb::types::RecordId as Thing;
 use surrealdb_types::SurrealValue;
 
 /// 这条绑定连接的是哪一类外部身份。
+#[allow(dead_code)] // 由 bind_external（显式 Account Linking）使用；该流程的 HTTP 入口尚未提供。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BindingType {
@@ -45,6 +46,7 @@ pub enum BindingType {
 }
 
 impl BindingType {
+    #[allow(dead_code)] // 同上：只被 new_federated 使用。
     pub fn as_str(&self) -> &'static str {
         match self {
             BindingType::Federated => "federated",
@@ -63,6 +65,7 @@ pub enum VerificationState {
 }
 
 impl VerificationState {
+    #[allow(dead_code)] // 同上：只被 new_federated 使用。
     pub fn as_str(&self) -> &'static str {
         match self {
             VerificationState::Verified => "verified",
@@ -109,6 +112,7 @@ pub struct IdentityBinding {
 }
 
 impl IdentityBinding {
+    #[allow(dead_code)] // 同上：bind_external 的构造器。
     pub fn new_federated(
         actor_identity_id: Thing,
         provider: impl Into<String>,

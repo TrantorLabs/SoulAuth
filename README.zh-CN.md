@@ -205,8 +205,8 @@ Detection、Key Lifecycle 与 Tamper-evident Audit 建立持续保护。
 以下全部是操作性的内容：怎么跑起来、对外暴露什么、怎么测的，以及哪些地方还不完整。
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 71 条路径 / 84 个 operation · 约 2.4 万行
-单元测试 188 项（零外部依赖）· 架构不变式 65 条 · 集成测试 27 组 351 项断言
+axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
+单元测试 196 项（零外部依赖）· 架构不变式 77 条 · 集成测试 28 组 391 项断言
 ```
 
 ---
@@ -294,7 +294,7 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 
 ## 接口面
 
-71 条路径、84 个 operation。`contracts/openapi.yaml` 是权威清单，
+72 条路径、85 个 operation。`contracts/openapi.yaml` 是权威清单，
 `tests/conformance.rs::j4` 拿它与路由表双向对账；这里给的是它的形状。
 
 | 前缀 | operation | 覆盖 |
@@ -302,7 +302,7 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 | `/api/auth` | 21 | 注册、登录、管理后台登录、登出、全端登出、会话列表、邮箱验证与重发、密码重置、首次设密、MFA（5 个）、两个 provider 的 OAuth 入口与回调 |
 | `/api/rbac` | 17 | 角色与权限的增删查、双向授予、自身权限自查 |
 | `/api/oidc` | 12 | 发现文档、JWKS、authorize、token、userinfo、logout，以及客户端管理 API |
-| `/api/actors` | 9 | AI 主体注册、加密钥、吊销密钥、领挑战、认证、自省 |
+| `/api/actors` | 10 | AI 主体注册、加密钥、吊销密钥、领挑战、认证、自省、停用 / 退役 |
 | `/api/me` | 7 | 本人资料、偏好、活动日志 |
 | `/api/users` | 7 | 管理员读取，以及账号状态与会员等级写入 |
 | `/api/audit` | 6 | 看板、活动摘要、安全指标、安全报告、系统健康、哈希链校验 |
@@ -390,8 +390,8 @@ curl -X POST localhost:8080/api/auth/logout -H "Authorization: Bearer $TOKEN"
 两层，分工不同，谁也替代不了谁。
 
 ```bash
-cargo test              # 单元测试 188 项，零外部依赖
-cargo build && ./tests/integration.sh   # 27 组 351 项断言
+cargo test              # 单元测试 196 项，零外部依赖
+cargo build && ./tests/integration.sh   # 28 组 391 项断言
 ```
 
 **单元测试**管纯逻辑与一致性不变量：权限名与种子数据是否对得上、端点路径
@@ -483,9 +483,6 @@ DEPLOYMENT.zh-CN.md
 
 ## 已知限制
 
-- **一致性测试里有 7 条不变式尚未成立。** 它们标了 `#[ignore]` 而不是删掉，
-  每条都注明属于哪个 Stage，`cargo test --test conformance -- --ignored` 会列出全部。
-  覆盖的是统一凭证表、同构认证结果、审计归因与领域仓储隔离。
 - **不含前端。** SoulAuth 是纯 API。邮件链接与 OAuth 后的重定向都指向
   `APP_URL` 下的路径——`/verify-email`、`/reset-password/{token}`、`/login`、
   `/oauth/callback`、`/initialize-password`。前三个可覆盖

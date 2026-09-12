@@ -496,6 +496,43 @@ impl Config {
             });
         }
 
+        // 数据库连接必须加密，而且不能用 root。
+        //
+        // 这两条此前只是部署建议：`warn_if_plaintext_remote` 打一行告警然后照常
+        // 连，而 SECURITY.md 承认只支持 root 登录。对一个原型可以接受；对身份与
+        // 认证基础设施不行 —— 库里装着全部口令哈希、会话指纹与 OIDC 签名密钥，
+        // 明文链路上的任何一跳都能拿到它们，而 root 意味着应用的一个 SQL 注入
+        // 就是整库权限。
+        //
+        // 所以把它们挪进启动闸门：生产模式下不满足就不启动，而不是启动之后
+        // 在日志里留一行没人读的 warn。
+        let db_host_is_loopback = host_of(&self.database_url)
+            .map(is_loopback_host)
+            .unwrap_or(false);
+        if !db_host_is_loopback {
+            let url = self.database_url.trim().to_ascii_lowercase();
+            let encrypted = url.starts_with("https://") || url.starts_with("wss://");
+            if !encrypted {
+                return Err(ConfigError::Invalid {
+                    name: "DATABASE_URL",
+                    reason: "must use https:// or wss:// when the database is not on loopback; \
+                            over plaintext the root credentials, every query, all password \
+                            hashes and all session fingerprints travel unencrypted"
+                        .to_string(),
+                });
+            }
+            if self.database_user.trim().eq_ignore_ascii_case("root") {
+                return Err(ConfigError::Invalid {
+                    name: "DATABASE_USER",
+                    reason: "must not be `root` in production: define a namespace- or \
+                            database-scoped user with only the privileges SoulAuth needs, so \
+                            that a single injection or a leaked connection string is not \
+                            whole-cluster access"
+                        .to_string(),
+                });
+            }
+        }
+
         // 本副本的审计链标识。
         //
         // 不猜：默认值 `BIND_ADDR` 在编排环境里每个 Pod 都一样，两个副本会共用

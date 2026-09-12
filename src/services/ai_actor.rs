@@ -45,6 +45,7 @@ use crate::{
             ALLOWED_ALGORITHMS, CHALLENGE_TTL_SECONDS, ED25519_PUBLIC_KEY_LEN,
             ED25519_SIGNATURE_LEN,
         },
+        authentication::AuthenticationResult,
         session::Session,
     },
     services::{database::Database, identity::IdentityService},
@@ -69,13 +70,10 @@ pub struct IssuedChallenge {
     pub algorithm: &'static str,
 }
 
-/// 认证成功后的产物。
-pub struct ActorSession {
-    pub token: String,
-    pub actor_id: String,
-    pub expires_at: i64,
-    pub credential_label: String,
-}
+// 认证成功后的产物是 `models::authentication::AuthenticationResult` —— 和 Human
+// 那条路径完全同一个类型。这里原先有一个只给 AIActor 用的 `ActorSession`：字段
+// 几乎一样，但类型不同，于是下游每多一类主体就要多一个分支，而「两类主体进入
+// 同一套 Actor Identity Contract」在代码里没有任何对应物。见 `b3`。
 
 #[derive(Clone)]
 pub struct AiActorService {
@@ -179,7 +177,7 @@ impl AiActorService {
                  SET status = $revoked, revoked_at = $now \
                  WHERE actor_identity_id = type::record('actor_identity', $actor) \
                    AND status = $active \
-                 RETURN type::string(id) AS id",
+                 RETURN type::string(id) AS id, label",
                 serde_json::json!({
                     "cred": credential_key,
                     "actor": actor_key,
@@ -194,6 +192,77 @@ impl AiActorService {
             // 不存在、不属于这个 actor、已经吊销过 —— 对外同一个答复。
             // 区分它们等于给调用方一条枚举别人凭证的信道。
             return Err(AuthError::NotFound("Credential not found".into()));
+        }
+
+        // 吊销这把钥匙，就要打掉**由这把钥匙建立的**会话。
+        //
+        // 以前只改凭证状态：已经签出去的会话继续有效到过期，于是「吊销密钥」
+        // 在可观察的行为上等于「从现在起不能再用它换新会话」，而不是「它现在
+        // 就不能用了」。多钥匙存在的意义正是它们可以各自独立失效 —— 没有会话
+        // 侧的传播，这个意义只剩一半。
+        //
+        // 只打掉这把钥匙的会话，不是这个主体的全部会话：那会把「换钥匙」变成
+        // 「全体下线」，而换钥匙本该是可以平滑做的。
+        // 标签来自刚才那条 UPDATE 的返回，不另查一次：中间那一瞬凭证可能已经
+        // 被别的请求改过，而我们要打掉的是**刚刚吊销的那一把**的会话。
+        let label = updated
+            .first()
+            .and_then(|row| row.get("label"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !label.is_empty() {
+            self.db
+                .raw_query(
+                    "ai_actor_revoke_sessions_of_credential",
+                    "DELETE session \
+                     WHERE user_id = type::record('actor_identity', $actor) \
+                       AND credential_label = $label",
+                    serde_json::json!({ "actor": actor_key, "label": label }),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// 改变一个 AIActor 的身份状态。
+    ///
+    /// `Suspended` 可逆，`Retired` 不可逆 —— 后者同时意味着 subject 不得复用。
+    /// 两者都必须立刻断掉现有会话：状态改了而令牌还能用，等于状态没改。
+    pub async fn set_actor_status(
+        &self,
+        actor_key: &str,
+        status: crate::models::actor_identity::ActorStatus,
+    ) -> Result<()> {
+        use crate::models::actor_identity::{ActorKind, ActorStatus};
+
+        let Some(actor) = self.identity.find_actor_by_id(actor_key).await? else {
+            return Err(AuthError::NotFound("Actor not found".into()));
+        };
+        if actor.actor_kind_parsed() != Some(ActorKind::AiActor) {
+            return Err(AuthError::Forbidden(
+                "This endpoint only manages AI actors".into(),
+            ));
+        }
+        // Retired 不可回头。允许它回到 active 等于让一个已经退役的 subject
+        // 重新指向一个活着的主体，而历史 Claims 与审计里还留着它。
+        if actor.status_parsed() == ActorStatus::Retired {
+            return Err(AuthError::Forbidden(
+                "A retired actor cannot change status; its subject must never be reused".into(),
+            ));
+        }
+
+        self.identity.set_status(&actor, status).await?;
+
+        if status != ActorStatus::Active {
+            self.db
+                .raw_query(
+                    "ai_actor_revoke_sessions_on_status_change",
+                    "DELETE session WHERE user_id = type::record('actor_identity', $actor)",
+                    serde_json::json!({ "actor": actor_key }),
+                )
+                .await?;
         }
         Ok(())
     }
@@ -288,7 +357,7 @@ impl AiActorService {
         signature_b64: &str,
         user_agent: &str,
         ip_address: &str,
-    ) -> Result<ActorSession> {
+    ) -> Result<AuthenticationResult> {
         // 算法不接受协商。放在最前是因为它最便宜，且不需要碰数据库。
         if !ALLOWED_ALGORITHMS.contains(&algorithm) {
             return Err(AuthError::BadRequest(format!(
@@ -462,7 +531,7 @@ impl AiActorService {
         credential: &AiActorCredential,
         user_agent: &str,
         ip_address: &str,
-    ) -> Result<ActorSession> {
+    ) -> Result<AuthenticationResult> {
         use jsonwebtoken::{encode, EncodingKey, Header};
 
         let actor_id = actor
@@ -505,15 +574,27 @@ impl AiActorService {
             created_at: now.timestamp(),
             user_agent: user_agent.to_string(),
             ip_address: ip_address.to_string(),
+            // 认证来源：哪一把钥匙建立了这个会话。
+            //
+            // 没有它，「吊销这把钥匙」只能要么不影响任何会话，要么把这个主体的
+            // 全部会话一起打掉 —— 而多钥匙存在的全部意义就是它们可以各自独立
+            // 失效。
+            credential_kind: Some(
+                crate::models::authentication::CredentialKind::Ed25519Key
+                    .as_str()
+                    .to_string(),
+            ),
+            credential_label: Some(credential.label.clone()),
+            authenticated_at: Some(now.timestamp()),
         };
         self.db.create_record("session", &session).await?;
 
-        Ok(ActorSession {
+        Ok(AuthenticationResult::ai_actor(
+            format!("actor_identity:{actor_key}"),
+            credential.label.clone(),
             token,
-            actor_id: format!("actor_identity:{actor_key}"),
-            expires_at: exp.timestamp(),
-            credential_label: credential.label.clone(),
-        })
+            exp.timestamp(),
+        ))
     }
 }
 

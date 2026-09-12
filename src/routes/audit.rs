@@ -100,6 +100,15 @@ pub struct SystemHealth {
     pub pending_lockouts: i64,
     pub memory_usage: MemoryStats,
     pub uptime_seconds: i64,
+
+    /// 审计落库是否还可靠。
+    ///
+    /// 丢过事件、或者读不到链头之后就是 `false`，而且不会自己恢复 ——
+    /// 恢复需要有人看一眼到底丢了什么。身份与凭证管理类操作不该在「接口返回
+    /// 成功、审计永久丢失」的状态下继续跑，而这件事此前从任何接口都看不出来。
+    pub audit_writes_healthy: bool,
+    /// 累计被丢弃的审计事件数。
+    pub audit_events_dropped: u64,
 }
 
 #[derive(Serialize)]
@@ -153,7 +162,8 @@ pub struct IpActivityMetric {
 
 #[derive(Serialize)]
 pub struct SuspiciousActivity {
-    pub user_id: Option<String>,
+    /// 归因到的身份根地址。列名与字段名都跟着真相走（见 `f1`）。
+    pub actor_identity_id: Option<String>,
     pub ip_address: String,
     pub activity_type: String,
     pub count: i64,
@@ -178,7 +188,7 @@ pub struct StatusMetric {
 
 #[derive(Serialize)]
 pub struct UserActivityMetric {
-    pub user_id: String,
+    pub actor_identity_id: String,
     pub email: String,
     pub activity_count: i64,
     pub last_activity: DateTime<Utc>,
@@ -431,6 +441,9 @@ pub async fn get_system_health(
     let memory_usage = get_memory_usage().await;
     let uptime_seconds = get_uptime_seconds();
 
+    let (audit_writes_healthy, audit_events_dropped) =
+        crate::services::audit_logger::audit_health();
+
     let health = SystemHealth {
         timestamp: Utc::now(),
         database_status,
@@ -438,6 +451,8 @@ pub async fn get_system_health(
         pending_lockouts,
         memory_usage,
         uptime_seconds,
+        audit_writes_healthy,
+        audit_events_dropped,
     };
 
     Ok(Json(health))
@@ -991,11 +1006,12 @@ async fn generate_user_behavior_analysis(
     let per_user_logins: Vec<serde_json::Value> = db
         .query_take0_vec(
             "audit_login_counts_per_user",
-            // `user_id != NONE` 不能省：匿名活动（未知邮箱的登录失败、限流告警等）
+            // `actor_identity_id != NONE` 不能省：匿名活动（未知邮箱的登录失败、限流告警等）
             // 会聚成一个 `NONE` 分组，在"每用户登录次数"的直方图里凭空多出一个用户。
-            "SELECT type::string(user_id) AS user_id, count() AS count FROM user_activity \
+            "SELECT type::string(actor_identity_id) AS actor_identity_id, count() AS count \
+             FROM user_activity \
              WHERE action IN ['login_success', 'oauth_login'] AND timestamp >= $start_time \
-             AND user_id != NONE GROUP BY user_id",
+             AND actor_identity_id != NONE GROUP BY actor_identity_id",
             json!({ "start_time": start_time.timestamp() }),
         )
         .await?;
@@ -1116,8 +1132,9 @@ async fn active_user_rate(
             "audit_active_users",
             // 同上：不过滤的话 `NONE` 也算一个"活跃用户"，活跃率恒定虚高。
             // 匿名活动几乎总是存在，所以这个偏差是常态而非偶发。
-            "SELECT type::string(user_id) AS user_id FROM user_activity \
-             WHERE timestamp >= $since AND user_id != NONE GROUP BY user_id",
+            "SELECT type::string(actor_identity_id) AS actor_identity_id FROM user_activity \
+             WHERE timestamp >= $since AND actor_identity_id != NONE \
+             GROUP BY actor_identity_id",
             json!({ "since": since.timestamp() }),
         )
         .await?;
@@ -1167,8 +1184,17 @@ async fn verify_integrity(
     // 与 record 转成 `serde_json::Value` 会失败，整个结果集一起解析不出来。
     // 按 (chain_id, seq) 排序：链是**按副本**分的，seq 只在一条链内单调。
     // 把所有行当成一条链，会在副本交界处误报断链。
+    // 归因列的投影要把「没有归因」明确变成空串。
+    //
+    // `type::string(NONE)` 返回的是**字符串 `"NONE"`**，不是 null。照直投影的话，
+    // 一条没有归因主体的事件在校验侧看起来像是归因到了一个名叫 `NONE` 的主体，
+    // 而写入侧喂进摘要的是空串 —— 于是任何包含未归因事件的链都被报成「已断」。
+    // 而第一条事件通常恰好就是未归因的（还没有人登录成功过），所以这件事
+    // 几乎对每一条链都成立。
     let sql = "SELECT chain_id, seq, previous_hash, event_hash, action, category, status, \
-               type::string(user_id) AS user_id, ip_address, user_agent, details, timestamp \
+               IF actor_identity_id = NONE THEN '' \
+                   ELSE type::string(actor_identity_id) END AS actor_identity_id, \
+               ip_address, user_agent, details, timestamp \
                FROM user_activity WHERE seq != NONE ORDER BY chain_id ASC, seq ASC";
     let rows: Vec<serde_json::Value> = db
         .query_take0_vec_no_bind("audit_integrity_scan", sql)
@@ -1196,6 +1222,9 @@ async fn verify_integrity(
     let mut checked = 0i64;
     let mut current_chain = String::new();
     let mut chains = 0i64;
+    // (chain_id, seq) → event_hash。checkpoint 的 head_hash 必须与这里对得上。
+    let mut anchors: std::collections::HashMap<(String, i64), String> =
+        std::collections::HashMap::new();
 
     for row in &rows {
         let str_of = |key: &str| {
@@ -1232,10 +1261,9 @@ async fn verify_integrity(
             break;
         }
 
-        let details_json = row
-            .get("details")
-            .map(|d| serde_json::to_string(d).unwrap_or_default())
-            .unwrap_or_else(|| "{}".to_string());
+        // 与写入侧同一个规范化：键顺序与 null 不参与摘要。
+        let details_json =
+            audit_integrity::canonical_json(row.get("details").unwrap_or(&serde_json::Value::Null));
         let recomputed = audit_integrity::event_hash(&audit_integrity::DigestInput {
             chain_id: &chain_id,
             seq,
@@ -1243,7 +1271,11 @@ async fn verify_integrity(
             action: &str_of("action"),
             category: &str_of("category"),
             status: &str_of("status"),
-            user_id: &str_of("user_id"),
+            // 与写入侧用同一个归一化：`type::string()` 读回来的地址可能带 ⟨⟩，
+            // 两侧都归一成裸 key 才能保证喂进摘要的是逐字节相同的串。
+            actor_identity_id: &crate::utils::record_id::normalize_actor_id(&str_of(
+                "actor_identity_id",
+            )),
             ip_address: &str_of("ip_address"),
             user_agent: &str_of("user_agent"),
             details_json: &details_json,
@@ -1259,6 +1291,9 @@ async fn verify_integrity(
             broken_reason = Some("event_hash".to_string());
             break;
         }
+
+        // 记下这一节的位置与哈希，供 checkpoint 锚点比对。
+        anchors.insert((chain_id.clone(), seq), stored.clone());
 
         previous_hash = stored;
         expected_seq = seq + 1;
@@ -1302,15 +1337,36 @@ async fn verify_integrity(
             .get("created_at")
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
-        if audit_integrity::verify_checkpoint(
+        let chain_of_cp = str_of("chain_id");
+        let head_hash = str_of("head_hash");
+        if !audit_integrity::verify_checkpoint(
             &public_key,
             &str_of("signature"),
-            &str_of("chain_id"),
+            &chain_of_cp,
             seq_to,
-            &str_of("head_hash"),
+            &head_hash,
             created_at,
         ) {
-            verified += 1;
+            continue;
+        }
+
+        // **签名有效还不够：它必须锚在链上真实存在的那一节上。**
+        //
+        // 这一步以前没有，而它正是 checkpoint 存在的全部理由。少了它，拥有数据库
+        // 写权限的人可以：保留一条旧的、合法签名的 checkpoint，重写整条链并重算
+        // 每一行的 event_hash —— 新链自身自洽，旧签名依然验得过，于是系统报告
+        // 「完好」。checkpoint 本来要防的就是这件事。
+        match anchors.get(&(chain_of_cp.clone(), seq_to)) {
+            Some(actual) if actual == &head_hash => verified += 1,
+            // 锚点对不上，或者那一节已经不在链上了（被删掉 / 被截断）。
+            // 这不是「少一个可验 checkpoint」，这是**篡改证据**。
+            _ => {
+                if broken_at.is_none() {
+                    broken_chain = Some(chain_of_cp);
+                    broken_at = Some(seq_to);
+                    broken_reason = Some("checkpoint_anchor".to_string());
+                }
+            }
         }
     }
 

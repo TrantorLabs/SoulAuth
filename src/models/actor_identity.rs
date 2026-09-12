@@ -47,6 +47,19 @@ impl ActorKind {
             ActorKind::AiActor => "ai_actor",
         }
     }
+
+    /// 读不懂的取值**不归入任何一类**。
+    ///
+    /// 不给默认值是刻意的：默认成 `Human` 会让一个拼错的 `actor_kind` 拿到人类
+    /// 认证路径，默认成 `AiActor` 会让它拿到免口令通道。两种都不行，所以返回
+    /// `None`，由闸门拒绝。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "human" => Some(ActorKind::Human),
+            "ai_actor" => Some(ActorKind::AiActor),
+            _ => None,
+        }
+    }
 }
 
 /// 这个身份通过什么受控来源进入 SoulAuth。
@@ -160,6 +173,17 @@ pub struct ActorIdentity {
 }
 
 impl ActorIdentity {
+    /// 解析 `actor_kind`。读不懂返回 `None` —— 见 [`ActorKind::parse`]。
+    pub fn actor_kind_parsed(&self) -> Option<ActorKind> {
+        ActorKind::parse(&self.actor_kind)
+    }
+
+    /// 解析 `status`。读不懂按 `Suspended` 处理（fail closed）：一个拼错的状态值
+    /// 不得变成「可以认证」。
+    pub fn status_parsed(&self) -> ActorStatus {
+        ActorStatus::parse(&self.status)
+    }
+
     /// 建立一个本地身份。
     ///
     /// `subject_key` 由调用方生成并保证唯一（数据库上有唯一索引兜底）。

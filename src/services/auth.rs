@@ -2,16 +2,17 @@ use crate::{
     config::Config,
     error::{AuthError, Result},
     models::{
-        identity_provider::{IdentityProvider, OAuthUserInfo},
+        authentication::{AuthenticationResult, CredentialKind},
+        identity_provider::OAuthUserInfo,
         mfa::MfaMethod,
         password_reset::PasswordResetToken,
         session::{Session, SessionInfo},
         subject::SubjectType,
-        user::{AuthResponse, CreateUserRequest, User},
+        user::{AuthResponse, CreateUserRequest, User, UserResponse},
     },
     services::{
-        auth_cache::AuthCache, database::Database, email::EmailService, identity::IdentityService,
-        mfa::MfaService, oauth::OAuthService,
+        auth_cache::AuthCache, credential::CredentialService, database::Database,
+        email::EmailService, identity::IdentityService, mfa::MfaService, oauth::OAuthService,
     },
     utils::validation::{validate_email, validate_password, validate_username},
 };
@@ -75,6 +76,11 @@ impl RequestContext {
 pub struct IssuedSession {
     pub response: AuthResponse,
     pub session_key: String,
+    /// 这次认证的**统一事实**。
+    ///
+    /// `response` 是对外的 wire 形状，带着账户字段（邮箱、用户名）；这一份只有
+    /// 身份事实，和 AIActor 那条路径产出的是同一个类型。见 `models::authentication`。
+    pub authentication: AuthenticationResult,
 }
 
 /// 登录结果：直接放行，或要求补一步 MFA。
@@ -94,6 +100,11 @@ pub struct AuthService {
     mfa_service: MfaService,
     /// 用于在会话被吊销时立刻同步清掉鉴权缓存。
     auth_cache: Arc<AuthCache>,
+    /// 口令凭证的唯一出入口。
+    ///
+    /// 口令哈希不在 `user` 行上，所以注册、登录、首次设密、重置口令四条路径
+    /// 都从这里走 —— 见 `services::credential`。
+    credentials: CredentialService,
     /// Actor Identity 的创建与解析。
     ///
     /// 身份根从 `user` 换成 `actor_identity` 之后，「建一个主体」要同时落
@@ -155,6 +166,7 @@ impl AuthService {
         let oauth_service = OAuthService::new(config.clone())?;
         let mfa_service = MfaService::new(db.clone(), config.clone())?;
         let identity = IdentityService::new(db.clone());
+        let credentials = CredentialService::new(db.clone());
         Ok(Self {
             db,
             config,
@@ -163,38 +175,12 @@ impl AuthService {
             mfa_service,
             auth_cache,
             identity,
+            credentials,
         })
     }
 
     pub fn mfa(&self) -> &MfaService {
         &self.mfa_service
-    }
-
-    /// 确保这个 user 行挂着身份根。
-    ///
-    /// Stage 2 之前它写的是 V1 的 `subject` 表；现在改建 `actor_identity`，
-    /// 因为 `user.subject_id` 是 Stage 3 把外键迁到身份根时唯一可追的线 ——
-    /// 让它继续指向 `subject` 等于在制造下一批要迁移的数据。
-    ///
-    /// 老账号第一次登录时在这里补上。
-    async fn ensure_user_subject(&self, user: User) -> Result<User> {
-        if user.subject_id.is_some() {
-            return Ok(user);
-        }
-
-        let human = self
-            .identity
-            .create_human(&user.email, &user.username, &user.username_normalized)
-            .await?;
-
-        let mut updated_user = user.clone();
-        updated_user.subject_id = human.actor.id.clone();
-        updated_user.updated_at = Utc::now().timestamp();
-
-        let user_thing = user.id.as_ref().ok_or(AuthError::UserNotFound)?;
-        self.db
-            .update_record("user", &record_address(user_thing), &updated_user)
-            .await
     }
 
     fn normalize_username(username: &str) -> String {
@@ -278,9 +264,20 @@ impl AuthService {
 
         let user_info = self.oauth_service.handle_google_callback(code).await?;
         let user = self.find_or_create_oauth_user(user_info).await?;
+        // 外部认证成立不等于这个主体现在有资格认证 —— 同一个闸门。
+        self.identity
+            .authenticable_actor_of_user(&record_key(
+                user.id.as_ref().ok_or(AuthError::UserNotFound)?,
+            ))
+            .await?;
         let user = self.touch_last_login(user, ctx).await?;
 
-        self.create_session_with_metadata(user, ctx).await
+        self.create_session_with_metadata(
+            user,
+            ctx,
+            (CredentialKind::ExternalIdentity, Some("google".to_string())),
+        )
+        .await
     }
 
     pub async fn handle_github_callback(
@@ -290,206 +287,124 @@ impl AuthService {
     ) -> Result<IssuedSession> {
         let user_info = self.oauth_service.handle_github_callback(code).await?;
         let user = self.find_or_create_oauth_user(user_info).await?;
+        self.identity
+            .authenticable_actor_of_user(&record_key(
+                user.id.as_ref().ok_or(AuthError::UserNotFound)?,
+            ))
+            .await?;
         let user = self.touch_last_login(user, ctx).await?;
 
-        self.create_session_with_metadata(user, ctx).await
+        self.create_session_with_metadata(
+            user,
+            ctx,
+            (CredentialKind::ExternalIdentity, Some("github".to_string())),
+        )
+        .await
     }
 
-    /// 补上缺失的 identity_binding。
+    /// 把一次外部认证结果解析到本地身份。
     ///
-    /// 过渡期专用：Stage 1 之前建立的账号只有 V1 的 `identity_provider` 关联，
-    /// 没有新的 `identity_binding`。每次这类账号登录时顺手补一条，
-    /// Stage 3 迁移时就不必再扫一遍历史数据。
+    /// # 只认 canonical IdentityBinding
     ///
-    /// 失败只记日志：这是回填，不是登录的前置条件 —— 让它挡住登录，
-    /// 等于用一个数据整理动作换来一次拒绝服务。
-    async fn backfill_binding(&self, user: &User, provider: &str, provider_subject: &str) {
-        match self
-            .identity
-            .resolve_binding(provider, provider_subject)
-            .await
-        {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let Some(actor_id) = user.subject_id.clone() else {
-                    return;
-                };
-                let actor_address = format!("actor_identity:{}", record_key(&actor_id));
-                match self
-                    .db
-                    .find_record_by_field::<crate::models::actor_identity::ActorIdentity>(
-                        "actor_identity",
-                        "id",
-                        &actor_address,
-                    )
-                    .await
-                {
-                    Ok(Some(actor)) => {
-                        if let Err(e) = self
-                            .identity
-                            .bind_external(&actor, provider, provider_subject)
-                            .await
-                        {
-                            error!("Failed to backfill identity binding: {e:?}");
-                        }
-                    }
-                    // subject_id 指向 V1 的 subject 表（Stage 1 之前的账号），
-                    // 或者干脆没有 —— 这两种都留给 Stage 3 的迁移处理。
-                    Ok(None) => {}
-                    Err(e) => error!("Failed to load actor for binding backfill: {e:?}"),
-                }
-            }
-            Err(e) => error!("Failed to check existing binding: {e:?}"),
-        }
-    }
-
+    /// 这条路径以前先查 V1 的 `identity_provider`，命中就登录，然后「顺手回填」
+    /// `identity_binding`，回填失败只记日志。于是 canonical binding 既不是认证
+    /// 前置条件，也不是事实源 —— 它只是一份事后补的影子记录。现在解析只经
+    /// [`IdentityService::resolve_binding`]，而那个函数会拒绝 revoked / pending
+    /// 的绑定。
+    ///
+    /// # 不按邮箱自动合并账户
+    ///
+    /// 以前外部 IdP 返回的邮箱与既有账户相同时，会把该外部身份直接挂到那个账户
+    /// 上。即使两边的邮箱都"已验证"，它也只证明两个身份域各自认为这个邮箱可达，
+    /// **不证明两个域里的主体是同一个**：邮箱会被回收、会被转让、企业域名会换
+    /// 归属。一个能注册到同名邮箱的人因此可以接管既有账户。
+    ///
+    /// 现在这种情况明确拒绝，要求走显式的 Account Linking（已认证的 Actor +
+    /// 新 IdP 认证 + 明确确认），而不是在登录路径上悄悄完成。
     async fn find_or_create_oauth_user(&self, user_info: OAuthUserInfo) -> Result<User> {
         debug!(
             "Starting find_or_create_oauth_user for provider: {}",
             user_info.provider
         );
 
-        // 下面三条分支都要用到这两个值，而 V1 的 IdentityProvider 构造会把
-        // 它们 move 走，所以先各留一份。
         let provider = user_info.provider.clone();
         let provider_subject = user_info.provider_user_id.clone();
 
-        // 首先通过 identity_provider 查找用户。
-        //
-        // **必须 (provider, provider_user_id) 两列一起查**，与 schema 上的唯一索引
-        // 对齐。以前只按 provider_user_id 单列查并取第一条 —— 身份的定义在代码里
-        // 是"这个 id"，在 schema 里却是"哪一家的这个 id"，两者不一致。
-        //
-        // 后果是跨 provider 顶号，已实测复现：给 Google 侧一个 sub 为 "4001" 的账号，
-        // 再用 id 为 4001 的 GitHub 账号登录，命中的是那条 google 记录，于是 GitHub
-        // 用户直接登进了 Google 用户的账号 —— 不建新号、不建新关联、HTTP 303 成功，
-        // 全程没有任何一处报错。今天挡住它的只是"Google 的 sub 是 21 位、GitHub 的
-        // id 是 8 位"这个恰好，而那是 provider 的 id 空间分配，不归我们管：
-        // 代码里已经支持 GITHUB_OAUTH_BASE_URL 指向自建 GHE（id 从 1 重新计数）。
-        let identities: Vec<IdentityProvider> = self
-            .db
-            .query_take0_vec(
-                "find_identity_by_provider_and_subject",
-                "SELECT * FROM identity_provider \
-                 WHERE provider = $provider AND provider_user_id = $provider_user_id LIMIT 1",
-                serde_json::json!({
-                    "provider": &user_info.provider,
-                    "provider_user_id": &user_info.provider_user_id,
-                }),
-            )
-            .await?;
-
-        if let Some(identity) = identities.into_iter().next() {
-            // `identity.user_id` 自 Stage 3 起是**身份根**引用，不是 user 行 id。
-            // 按 `user.id` 查必然找不到 —— 第二次社交登录于是报 UserNotFound
-            // 并返回 404，看起来像「账号丢了」，实际是查错了字段。
+        // ① 唯一的解析入口。
+        if let Some(actor) = self
+            .identity
+            .resolve_binding(&provider, &provider_subject)
+            .await?
+        {
+            let actor_ref = actor
+                .id
+                .clone()
+                .ok_or_else(|| AuthError::DatabaseError("actor_identity 没有 id".into()))?;
             let users: Vec<User> = self
                 .db
                 .query_take0_vec(
                     "find_user_by_actor_ref",
                     "SELECT * FROM user WHERE subject_id = type::record('actor_identity', $key) \
                      LIMIT 1",
-                    serde_json::json!({ "key": record_key(&identity.user_id) }),
+                    serde_json::json!({ "key": record_key(&actor_ref) }),
                 )
                 .await?;
-            let user = users.into_iter().next().ok_or(AuthError::UserNotFound)?;
-
-            // 过渡期回填：V1 的 identity_provider 已经有这条关联，但新的
-            // identity_binding 可能还没有（账号建于 Stage 1 之前）。补上，
-            // 让 Stage 3 迁移时不必再扫一遍历史数据。
-            self.backfill_binding(&user, &provider, &provider_subject)
-                .await;
-
-            return self.ensure_user_subject(user).await;
+            // 有绑定、有身份根，却没有账户扩展 —— 身份关系断裂，fail closed。
+            let user = users.into_iter().next().ok_or_else(|| {
+                AuthError::Unauthorized(
+                    "Identity is incomplete and cannot authenticate".to_string(),
+                )
+            })?;
+            return Ok(user);
         }
 
         let email = validate_email(&user_info.email)?;
 
-        // 邮箱已存在则把该身份源挂到既有账号上
-        if let Some(existing_user) = self
+        // ② 邮箱撞上既有账户：拒绝，不合并。
+        if self
             .db
             .find_record_by_field::<User>("user", "email", &email)
             .await?
+            .is_some()
         {
-            let now_ts = Utc::now().timestamp();
-            let identity = IdentityProvider {
-                id: new_thing("identity_provider"),
-                provider: user_info.provider,
-                provider_user_id: user_info.provider_user_id,
-                // 外键指身份根（Stage 3）。
-                user_id: existing_user
-                    .subject_id
-                    .clone()
-                    .ok_or(AuthError::UserNotFound)?,
-                created_at: now_ts,
-                updated_at: now_ts,
-            };
-            self.db
-                .create_record("identity_provider", &identity)
-                .await?;
-            self.backfill_binding(&existing_user, &provider, &provider_subject)
-                .await;
-            return self.ensure_user_subject(existing_user).await;
+            return Err(AuthError::Forbidden(
+                "An account with this email already exists. Sign in with it first and then link \
+                 this provider — a matching email address does not by itself prove the two \
+                 identities are the same subject."
+                    .to_string(),
+            ));
         }
 
-        // 创建新用户
-        let now = Utc::now();
-        let id = new_thing("user");
+        // ③ 全新主体：身份根 + 绑定 + 账户扩展。
+        //
+        // 绑定失败必须让整次首登失败。以前这里只记一行日志就继续，于是会留下
+        // 一个「能登录但没有 canonical 绑定」的账号 —— 下一次登录解析不到绑定，
+        // 又会走到②，从此这个账号再也登不进来。
         let (username, username_normalized) = self
             .generate_unique_username(email.split('@').next().unwrap_or("user"))
             .await?;
 
-        // 身份根先建，并立刻绑定外部身份 —— 社交登录的主体从第一刻起就有
-        // 完整的 identity + binding，不留待日后回填。
-        let human = self
+        // 身份根 + 账户扩展 + `user` 行 + 绑定，**一个事务**。放在同一笔里之后，
+        // 「能登录但没有 canonical 绑定」的账号在库里不可能存在。
+        let (_actor_key, user_key) = self
             .identity
-            .create_human(&email, &username, &username_normalized)
-            .await?;
-        if let Err(e) = self
-            .identity
-            .bind_external(&human.actor, &provider, &provider_subject)
+            .create_human_aggregate(
+                &email,
+                &username,
+                &username_normalized,
+                true, // 外部 IdP 已验证邮箱
+                None,
+                None,
+                None, // 社交账号没有口令；要口令走 initialize-password
+                Some((provider.clone(), provider_subject.clone())),
+            )
             .await
-        {
-            error!("Failed to create identity binding for {provider}: {e:?}");
-        }
+            .map_err(translate_unique_violation)?;
 
-        let user = User {
-            id: Some(id.clone()),
-            subject_id: human.actor.id.clone(),
-            email,
-            username,
-            username_normalized,
-            password_hash: None, // OAuth 用户没有密码
-            created_at: now.timestamp(),
-            updated_at: now.timestamp(),
-            is_email_verified: true, // OAuth 邮箱已验证
-            verification_token_hash: None,
-            verification_token_expires_at: None,
-            account_status: crate::models::user::AccountStatus::Active.to_string(),
-            membership_level: "FREE".to_string(),
-            membership_expiry: None,
-            last_login_at: None,
-            last_login_ip: None,
-        };
-
-        let created_user = self.db.create_record("user", &user).await?;
-
-        let now_ts = Utc::now().timestamp();
-        let identity = IdentityProvider {
-            id: new_thing("identity_provider"),
-            provider: user_info.provider,
-            provider_user_id: user_info.provider_user_id,
-            // 外键指身份根（Stage 3）。这条记录与上面刚建的 identity_binding
-            // 表达同一件事 —— V1 的 identity_provider 会在 Stage 4 一并删掉。
-            user_id: human.actor.id.clone().ok_or(AuthError::UserNotFound)?,
-            created_at: now_ts,
-            updated_at: now_ts,
-        };
         self.db
-            .create_record("identity_provider", &identity)
-            .await?;
-
-        Ok(created_user)
+            .find_record_by_field::<User>("user", "id", &format!("user:{user_key}"))
+            .await?
+            .ok_or_else(|| AuthError::DatabaseError("刚建的 user 行读不回来".into()))
     }
 
     pub async fn register(
@@ -531,48 +446,35 @@ impl AuthService {
                 (None, None)
             };
 
-        // 身份根：先建 actor_identity + human_account，再建 V1 的 user 行。
+        // 身份根、账户扩展、`user` 行与口令凭证，**一个事务建齐**。
         //
-        // Stage 2 是过渡期，两套并存：新表已经是权威身份根，`user` 仍承载
-        // password 与各处外键（Stage 3 迁完外键、Stage 4 删表）。
-        //
-        // 顺序是刻意的 —— 先建新的。反过来的话，新表因唯一索引冲突失败时
-        // 会留下一个没有身份根的 user 行，而那正是 Stage 3 要迁移的东西。
-        let human = self
+        // 逐条写的时候，任何一步失败都会留下一种不会报错的中间态。最难受的是
+        // 「有身份根没有 user 行」：登录按邮箱查 `user` 查不到，而重新注册又撞
+        // `human_account` 的邮箱唯一索引 —— 这个邮箱从此既登不进也注册不了，
+        // 而调用方当时只看到一个 409。
+        let (actor_key, user_key) = self
             .identity
-            .create_human(&email, &username, &username_normalized)
+            .create_human_aggregate(
+                &email,
+                &username,
+                &username_normalized,
+                !self.config.email_verification_enabled,
+                verification_token
+                    .as_deref()
+                    .map(crate::utils::crypto::hash_bearer),
+                verification_expires_at,
+                Some(hashed_password),
+                None,
+            )
             .await
             .map_err(translate_unique_violation)?;
-
-        let user = User {
-            id: Some(new_thing("user")),
-            // V1 的 subject 表已被 actor_identity.actor_kind 取代。这里改指
-            // 新身份根的 id，让两套记录之间有一条可追的线 —— Stage 3 迁移
-            // 外键时要靠它把 user 行对应回 actor。
-            subject_id: human.actor.id.clone(),
-            email: email.clone(),
-            username,
-            username_normalized,
-            password_hash: Some(hashed_password),
-            created_at: now.timestamp(),
-            updated_at: now.timestamp(),
-            is_email_verified: !self.config.email_verification_enabled,
-            verification_token_hash: verification_token
-                .as_deref()
-                .map(crate::utils::crypto::hash_bearer),
-            verification_token_expires_at: verification_expires_at,
-            account_status: crate::models::user::AccountStatus::Active.to_string(),
-            membership_level: "FREE".to_string(),
-            membership_expiry: None,
-            last_login_at: None,
-            last_login_ip: None,
-        };
 
         let created_user = self
             .db
-            .create_record("user", &user)
-            .await
-            .map_err(translate_unique_violation)?;
+            .find_record_by_field::<User>("user", "id", &format!("user:{user_key}"))
+            .await?
+            .ok_or_else(|| AuthError::DatabaseError("刚建的 user 行读不回来".into()))?;
+        let _ = actor_key;
 
         if let Some(token) = verification_token {
             // 用户记录已经提交了，此时再抛错只会让调用方拿到 500、重试又撞 409，
@@ -588,14 +490,17 @@ impl AuthService {
             return Ok((
                 AuthResponse {
                     token: String::new(),
-                    user: created_user.into(),
+                    // 口令刚在上面写进 credential，这里不必再查一次。
+                    user: UserResponse::of(created_user, true),
                 },
                 None,
             ));
         }
 
         let created_user = self.touch_last_login(created_user, ctx).await?;
-        let issued = self.create_session_with_metadata(created_user, ctx).await?;
+        let issued = self
+            .create_session_with_metadata(created_user, ctx, (CredentialKind::Password, None))
+            .await?;
         Ok((issued.response, Some(issued.session_key)))
     }
 
@@ -607,28 +512,29 @@ impl AuthService {
     ) -> Result<LoginOutcome> {
         let email = validate_email(&email).map_err(|_| AuthError::InvalidCredentials)?;
 
-        let user = match self
+        let found = self
             .db
             .find_record_by_field::<User>("user", "email", &email)
-            .await?
-        {
-            Some(user) => user,
-            None => {
-                // 邮箱没注册过也要把 Argon2 的时间花掉，否则响应快得多，
-                // 等于告诉调用方"这个邮箱不存在"。
-                spend_password_verification_time().await;
-                return Err(AuthError::InvalidCredentials);
-            }
-        };
+            .await?;
 
-        // 验证密码
-        let password_hash = match user.password_hash.clone() {
-            Some(hash) => hash,
-            None => {
-                // 纯 OAuth 账号没有密码哈希，同理不能提前返回。
-                spend_password_verification_time().await;
-                return Err(AuthError::InvalidCredentials);
-            }
+        // 凭证查询**无论邮箱是否存在都要发生一次**。
+        //
+        // 口令哈希搬进 `credential` 表之后，「用户不存在」原本只需要一次查询，
+        // 而「用户存在」需要两次。那个差值本身就是一个用户枚举信道 —— 它不需要
+        // 精确计时，批量对比平均响应时间就够。所以不存在的那条路也去查一次，
+        // 查的是一个不可能命中的身份。
+        let probe_actor = found
+            .as_ref()
+            .and_then(|u| u.subject_id.clone())
+            .unwrap_or_else(|| new_thing("actor_identity"));
+        let stored_hash = self.credentials.active_password_hash(&probe_actor).await?;
+
+        let (Some(user), Some(password_hash)) = (found, stored_hash) else {
+            // 邮箱没注册过、或者这个账号没有可用口令（纯 OAuth 账号、口令被
+            // 吊销）。两种情况都要把 Argon2 的时间花掉，否则响应快得多，
+            // 等于告诉调用方"这个邮箱不存在"。
+            spend_password_verification_time().await;
+            return Err(AuthError::InvalidCredentials);
         };
 
         verify_password_blocking(password_hash, password).await?;
@@ -638,24 +544,25 @@ impl AuthService {
             return Err(AuthError::EmailNotVerified);
         }
 
-        // 检查账户状态。
+        // 身份根闸门。**无条件**经过，不是「能找到 human_account 才查」。
         //
-        // 这里查两处，因为 Stage 2 是过渡期：`user.account_status` 是 V1 的，
-        // `actor_identity.status` 是新身份根的。Stage 3 迁完外键之后只留后者。
-        //
-        // 两者都要过 —— 任一为不可用即拒。过渡期宁可多拒，不能少拒。
+        // 这里以前包在 `if let Some(human) = find_human_by_email(...)` 里：找不到
+        // 账户扩展时整段跳过，于是一个没有账户扩展的半成品身份反而绕过了身份根
+        // 的状态检查。闸门现在自己处理这种情况 —— 缺账户扩展即拒。
+        let actor = self
+            .identity
+            .authenticable_actor_of_user(&record_key(
+                user.id.as_ref().ok_or(AuthError::UserNotFound)?,
+            ))
+            .await?;
+
+        // 账户扩展自己的状态仍然要看：它是附加条件，不是唯一条件。
         Self::ensure_account_usable(&user)?;
 
-        if let Some(human) = self.identity.find_human_by_email(&email).await? {
-            if !human.actor.can_authenticate() {
-                // 身份根说不能认证，就不能认证。它只影响**未来**的资格，
-                // 不改写这个账号过去的认证事实。
-                return Err(AuthError::AccountSuspended);
-            }
-            // 邮箱验证状态同样两处并存：V1 在 `user.is_email_verified`，
-            // 新的在 `human_account.email_verified`。任一未验证即拒 ——
-            // 过渡期宁可多拒。
-            if self.config.email_verification_enabled && !human.account.email_verified {
+        // 邮箱验证状态两处并存：V1 在 `user.is_email_verified`，新的在
+        // `human_account.email_verified`。任一未验证即拒 —— 过渡期宁可多拒。
+        if let Some(account) = &actor.account {
+            if self.config.email_verification_enabled && !account.email_verified {
                 return Err(AuthError::EmailNotVerified);
             }
         }
@@ -673,15 +580,21 @@ impl AuthService {
         }
 
         let user = self.touch_last_login(user, ctx).await?;
-        let response = self.create_session_with_metadata(user, ctx).await?;
+        let response = self
+            .create_session_with_metadata(user, ctx, (CredentialKind::Password, None))
+            .await?;
         Ok(LoginOutcome::Authenticated(Box::new(response)))
     }
 
     /// MFA 第二步通过之后完成登录。
+    ///
+    /// `second_factor` 由路由传入：验 TOTP 还是用掉一枚备用恢复码，在安全上
+    /// 不是一回事（后者一次性、且通常意味着用户丢了验证器），审计里要分得开。
     pub async fn complete_mfa_login(
         &self,
         user_id: &str,
         ctx: &RequestContext,
+        second_factor: CredentialKind,
     ) -> Result<IssuedSession> {
         let user = self
             .db
@@ -689,10 +602,16 @@ impl AuthService {
             .await?
             .ok_or(AuthError::UserNotFound)?;
 
+        // MFA 第二步也要过身份根闸门。
+        //
+        // 以前这里只看 `user.account_status`：第一步之后把身份根暂停掉，第二步
+        // 仍然能换出会话 —— 而那 5 分钟的挑战令牌正好是攻击者手上已经有的东西。
+        self.identity.authenticable_actor_of_user(user_id).await?;
         Self::ensure_account_usable(&user)?;
 
         let user = self.touch_last_login(user, ctx).await?;
-        self.create_session_with_metadata(user, ctx).await
+        self.create_session_with_metadata(user, ctx, (second_factor, None))
+            .await
     }
 
     /// 登录闸门。判定在 [`User::ensure_usable`]，与令牌闸门、密码重置、
@@ -725,20 +644,39 @@ impl AuthService {
         }
     }
 
+    /// 签发会话。
+    ///
+    /// `credential` 是**本次实际验证的那一类凭证**，由调用方声明 —— 这个函数
+    /// 自己看不出来调用它的是口令登录、MFA 第二步还是邮件链接，而「用什么证明
+    /// 的」是审计归因要用的事实，不能在这里含糊成「通过了」。
     async fn create_session_with_metadata(
         &self,
         user: User,
         ctx: &RequestContext,
+        credential: (CredentialKind, Option<String>),
     ) -> Result<IssuedSession> {
         let now = Utc::now();
         let exp = now + Duration::seconds(self.session_ttl_seconds());
 
         let session_id = new_thing("session");
         let session_key = record_key(&session_id);
-        let user_thing = user.id.as_ref().ok_or(AuthError::UserNotFound)?.clone();
 
+        // 会话归属**身份根**，不是 user 行。
+        let actor_ref = user.subject_id.clone().ok_or_else(|| {
+            AuthError::DatabaseError(format!("user {} 没有关联的 actor_identity", user.email))
+        })?;
+        let actor_address = record_address(&actor_ref);
+
+        // `sub` 是**身份根**的 key，不是 user 行的主键。
+        //
+        // 这一条以前写的是 user key，于是 Human 与 AIActor 的令牌语义不对称：
+        // AIActor 的 `sub` 是 actor key，Human 的是 user key。两类主体号称进入
+        // 同一套 Actor Identity Contract，而令牌里的主体却是两种东西。
+        //
+        // 改它会让所有在途令牌失效 —— 那是一次性的代价，记在 CHANGELOG 的升级
+        // 步骤里；留着不对称的代价是永久的。
         let claims = Claims {
-            sub: record_key(&user_thing),
+            sub: record_key(&actor_ref),
             exp: exp.timestamp(),
             iat: now.timestamp(),
             session_id: Some(session_key.clone()),
@@ -752,32 +690,42 @@ impl AuthService {
         )
         .map_err(|e| AuthError::TokenError(e.to_string()))?;
 
-        // 会话归属**身份根**，不是 user 行。
-        //
-        // `claims.sub` 仍然是 user id：那是对外的令牌契约，改它会让所有在途
-        // 令牌失效，属于 Stage 3 之后的事。这里改的是存储侧的归属关系。
-        let actor_ref = user.subject_id.clone().ok_or_else(|| {
-            AuthError::DatabaseError(format!("user {} 没有关联的 actor_identity", user.email))
-        })?;
-
+        let (credential_kind, credential_label) = credential;
         let session = Session {
             id: Some(session_id),
-            user_id: actor_ref,
+            user_id: actor_ref.clone(),
             token_hash: crate::utils::crypto::hash_bearer(&token),
             expires_at: exp.timestamp(),
             created_at: now.timestamp(),
             user_agent: ctx.user_agent.clone(),
             ip_address: ctx.ip_address.clone(),
+            // 认证来源随会话一起落库，而不是只进审计详情：撤销传播与
+            // `auth_time` 都要读它。
+            credential_kind: Some(credential_kind.as_str().to_string()),
+            credential_label: credential_label.clone(),
+            authenticated_at: Some(now.timestamp()),
         };
 
         self.db.create_record("session", &session).await?;
 
+        // `has_password` 不再能从账户行推导，只能问凭证。
+        let has_password = self.credentials.has_password(&actor_ref).await?;
+
+        let authentication = AuthenticationResult::human(
+            actor_address,
+            credential_kind,
+            credential_label,
+            token.clone(),
+            exp.timestamp(),
+        );
+
         Ok(IssuedSession {
             response: AuthResponse {
                 token,
-                user: user.into(),
+                user: UserResponse::of(user, has_password),
             },
             session_key,
+            authentication,
         })
     }
 
@@ -833,7 +781,8 @@ impl AuthService {
             .ok_or(AuthError::UserNotFound)?;
 
         let verified_user = self.touch_last_login(verified_user, ctx).await?;
-        self.create_session_with_metadata(verified_user, ctx).await
+        self.create_session_with_metadata(verified_user, ctx, (CredentialKind::EmailLink, None))
+            .await
     }
 
     pub async fn initialize_password(&self, user_id: &str, password: &str) -> Result<User> {
@@ -845,13 +794,29 @@ impl AuthService {
             .await?
             .ok_or(AuthError::UserNotFound)?;
 
-        if user.password_hash.is_some() {
+        let actor_ref = user
+            .subject_id
+            .clone()
+            .ok_or_else(|| AuthError::DatabaseError("user 行没有身份根".to_string()))?;
+
+        // 「已经设过口令」查的是凭证，不是 user 行上的一列。
+        if self
+            .credentials
+            .active_password_hash(&actor_ref)
+            .await?
+            .is_some()
+        {
             return Err(AuthError::PasswordAlreadySet);
         }
 
-        user.password_hash = Some(hash_password_blocking(password.to_string()).await?);
-        user.updated_at = Utc::now().timestamp();
+        self.credentials
+            .set_password(
+                &actor_ref,
+                hash_password_blocking(password.to_string()).await?,
+            )
+            .await?;
 
+        user.updated_at = Utc::now().timestamp();
         let user_thing = user.id.as_ref().ok_or(AuthError::UserNotFound)?.clone();
         self.db
             .update_record("user", &record_address(&user_thing), &user)
@@ -1064,9 +1029,20 @@ impl AuthService {
         // "该账号被停用"对他不是新信息。
         user.ensure_usable()?;
 
-        user.password_hash = Some(hash_password_blocking(new_password.clone()).await?);
-        user.updated_at = Utc::now().timestamp();
+        // 轮换凭证，而不是改写账户行。`set_password` 会记下 `rotated_at`，
+        // 于是「这把口令什么时候换过」有一个可查的答案。
+        let actor_ref = user
+            .subject_id
+            .clone()
+            .ok_or_else(|| AuthError::DatabaseError("user 行没有身份根".to_string()))?;
+        self.credentials
+            .set_password(
+                &actor_ref,
+                hash_password_blocking(new_password.clone()).await?,
+            )
+            .await?;
 
+        user.updated_at = Utc::now().timestamp();
         let user_thing = user.id.as_ref().ok_or(AuthError::UserNotFound)?.clone();
         self.db
             .update_record("user", &record_address(&user_thing), &user)
@@ -1080,10 +1056,12 @@ impl AuthService {
             .await?;
 
         // 改密之后强制所有既有会话下线。
+        //
+        // 失败必须向上传播。这里以前只记一行日志然后继续返回成功 —— 于是接口
+        // 告诉用户「密码已重置」，而攻击者手上那枚会话令牌还活着。一次信任撤销
+        // 失败不能用一行 error 日志替代。
         let user_id = record_key(&user_thing);
-        if let Err(e) = self.db.delete_sessions_by_user_id(&user_id).await {
-            error!("Failed to revoke sessions after password reset: {:?}", e);
-        }
+        self.db.delete_sessions_by_user_id(&user_id).await?;
         self.auth_cache.invalidate_user(&user_id).await;
         info!("Password reset completed; all sessions revoked");
 

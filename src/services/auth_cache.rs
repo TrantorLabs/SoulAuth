@@ -141,7 +141,6 @@ mod tests {
             email: format!("{id}@example.com"),
             username: id.to_string(),
             username_normalized: id.to_string(),
-            password_hash: None,
             created_at: 0,
             updated_at: 0,
             is_email_verified: true,
