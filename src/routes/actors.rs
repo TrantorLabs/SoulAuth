@@ -376,22 +376,22 @@ async fn authenticate(
                 // 以前只把 actor id 塞进自由格式的 details，于是
                 // `user_activity.actor_identity_id` 是 NONE：按主体查它的认证
                 // 历史做不到，而 details 里那个值是可变的弱约束文本。
-                .with_actor(session.actor_identity_id.clone())
+                .with_actor(session.fact.actor_identity_id.clone())
                 .with_details(serde_json::json!({
                     "subject_type": "agent",
-                    "credential_kind": session.credential_kind.as_str(),
-                    "credential_label": session.credential_label,
+                    "methods": session.fact.method_names(),
+                    "credential_refs": session.fact.credential_refs,
+                    "authenticated_at": session.fact.authenticated_at,
                 })),
             );
 
             Ok(Json(AuthenticateResponse {
                 token: session.token,
                 token_type: "Bearer",
-                actor_id: session.actor_identity_id,
+                actor_id: session.fact.actor_identity_id,
                 expires_at: session.expires_at,
-                // wire 形状不变（`j8` 冻结了它）：统一类型里这个字段是 Option，
-                // 而 AIActor 一定带标签，所以这里取出来是安全的。
-                credential_label: session.credential_label.unwrap_or_default(),
+                // wire 形状不变（`j8` 冻结了它）。
+                credential_label: session.credential_label,
             }))
         }
         Err(e) => {

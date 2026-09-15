@@ -522,59 +522,81 @@ fn b2_identity_outlives_any_credential() {
     );
 }
 
-/// B3 · Human 与 AIActor 产出同构的 AuthenticationResult
+/// B3 · Human 与 AIActor 产出同构的认证事实，且事实不拥有令牌
 ///
 /// 不同 Credential，相同 Actor Identity Contract。两条认证路径若各自产出
 /// 不同形状的结果，Actor-native 就只是数据建模。
 ///
-/// 原断言只查「源码里有没有 `struct AuthenticationResult` 这串字符」。那不够：
-/// 定义一个没人用的类型就能让它变绿，而 Actor-native 照样只是说法。所以这里
-/// 还要查**两条路径都真的产出它**，以及它带着区分主体与凭证所必需的字段。
+/// 这条曾经要求事实里**有** `token` 字段 —— 那是把「认证成立」和「签出了一枚
+/// bearer」绑在一起。现在反过来：事实**不得**拥有令牌与令牌过期时间。令牌是把
+/// 事实投影成协议的产物，由会话签发路径负责；审计记的、OIDC 投影的都是事实。
+///
+/// 同时守住 MFA 的完整性：方法是集合，`password + totp` 不能记成一次 totp 登录。
 #[test]
 fn b3_authentication_result_is_uniform() {
-    let all = sources();
-    let defined = all
-        .iter()
-        .any(|(_, b)| b.contains("pub struct AuthenticationResult"));
-    assert!(defined, "缺少统一的 AuthenticationResult");
-
-    // 定义里必须有这四个字段，否则「同构」退化成一个只装令牌的壳：
-    // 没有 actor_kind 就分不出主体类别，没有 credential_kind 就记不下
-    // 「用什么证明的」—— 而那正是审计归因要用的东西。
     let model = read("src/models/authentication.rs");
+    assert!(
+        model.contains("pub struct AuthenticationFact"),
+        "缺少统一的 AuthenticationFact"
+    );
+
+    // 事实的最小字段：谁、哪类、用了哪些方法、何时、哪些本地凭证。
     for field in [
         "pub actor_identity_id",
         "pub actor_kind",
-        "pub credential_kind",
-        "pub token",
+        "pub methods: Vec<AuthenticationMethod>",
+        "pub authenticated_at",
+        "pub credential_refs: Vec<String>",
     ] {
         assert!(
             model.contains(field),
-            "AuthenticationResult 缺少字段 `{field}`"
+            "AuthenticationFact 缺少字段 `{field}`"
         );
     }
 
+    // 事实不得拥有令牌。
+    for forbidden in ["pub token", "pub expires_at", "pub access_token"] {
+        assert!(
+            !model.contains(forbidden),
+            "AuthenticationFact 含 `{forbidden}` —— 认证事实不是令牌，令牌是它的投影"
+        );
+    }
+
+    // 方法枚举叫 AuthenticationMethod：external_identity / email_link 不是本地凭证，
+    // 叫 CredentialKind 是语义错误。
+    assert!(
+        model.contains("pub enum AuthenticationMethod"),
+        "认证层的方法枚举应为 AuthenticationMethod，不是 CredentialKind"
+    );
+    assert!(
+        !model.contains("pub enum CredentialKind"),
+        "认证层仍在用 CredentialKind 命名认证方法"
+    );
+
     // 两条认证路径各自都要产出它。
-    //
-    // `auth.rs` 是 Human（口令 / MFA / 外部身份 / 邮件链接），
-    // `ai_actor.rs` 是 AIActor（Ed25519 挑战—应答）。任一侧退回自己的私有
-    // 结果类型，这条就该重新变红。
     for (module, what) in [
         ("src/services/auth.rs", "Human"),
         ("src/services/ai_actor.rs", "AIActor"),
     ] {
         let body = read(module);
         assert!(
-            body.contains("AuthenticationResult"),
-            "{module}（{what} 认证路径）没有产出 AuthenticationResult —— \
-             两条路径各自产出不同形状的结果时，Actor-native 只剩数据建模"
+            body.contains("AuthenticationFact::"),
+            "{module}（{what} 认证路径）没有产出 AuthenticationFact"
         );
     }
 
-    // 身份根地址不得是 user 行。归因到 `user:` 就把「谁」退回了账户实现。
+    // MFA 完成路径必须把第一因子带上。
+    let auth = read("src/services/auth.rs");
+    assert!(
+        auth.contains("vec![AuthenticationMethod::Password, second_factor]"),
+        "MFA 第二步产出的方法集合必须包含第一因子 password —— 只记第二因子会把\
+         两因子登录记成一因子"
+    );
+
+    // 身份根地址不得是 user 行。
     assert!(
         model.contains("actor_identity:"),
-        "AuthenticationResult 的文档里没有写明身份根形如 `actor_identity:xxx`"
+        "AuthenticationFact 的文档里没有写明身份根形如 `actor_identity:xxx`"
     );
 }
 
@@ -1158,22 +1180,122 @@ fn f4_audit_is_tamper_evident() {
 // ═════════════════════ G. 工程结构 ═════════════════════
 // 法源: Canonical Architecture §15 / §19, Engineering Delta §13 / §17 / §20
 
-/// G1 · Repository 按领域分离
+/// G1 · 领域写入责任：每一个领域源只有明确的写入者
 ///
-/// 一个数据库可以承载多个领域，但一个 Repository 不能偷偷拥有所有领域的写权限。
+/// 这条以前断言的是「源码里存在六个叫 `*Repository` 的类名」。那个判据不成立：
+/// Repository 类的数量与领域责任是否分离没有关系 —— 六个空壳能让它变绿，而
+/// 一个 `Database` 句柄被 18 个文件直接拿着写各种表，它照样红不了。它因此长期
+/// 标着 `#[ignore]`，而「为了 ignored = 0 造六个抽象」正是它诱导的错误方向。
+///
+/// 真正要守的是：**谁可以写 Identity 源、谁可以写 Credential 源、谁可以写
+/// Session 源、谁可以写 Audit 源，以及有没有绕过 canonical writer 的路径。**
+/// 这里直接对着源码数写入语句。判据是行为，不是类名。
 #[test]
-#[ignore = "V2 Stage 1-5 —— 无 Repository 抽象，Database 单结构 21 个公开方法通吃全域"]
-fn g1_repositories_are_separated_by_domain() {
-    let all: String = sources().iter().map(|(_, b)| b.clone()).collect();
-    for repo in [
-        "IdentityRepository",
-        "CredentialRepository",
-        "SessionRepository",
-        "OidcRepository",
-        "SecurityRepository",
-        "AuditRepository",
-    ] {
-        assert!(all.contains(repo), "缺少 {repo}");
+fn g1_domain_sources_have_explicit_writers() {
+    // 领域源 → 允许写它的模块（相对 src/ 的路径）。
+    //
+    // 这张表就是架构的写入责任声明。加一个写入者要在这里登记，而登记本身会
+    // 出现在 review 里 —— 那正是「不得偷偷拥有跨域写权限」的可见形式。
+    let ownership: &[(&str, &[&str])] = &[
+        // 身份根与它的两个附属对象：只有 IdentityService 建、改、绑。
+        ("actor_identity", &["services/identity.rs"]),
+        ("human_account", &["services/identity.rs"]),
+        ("identity_binding", &["services/identity.rs"]),
+        // 口令凭证：CredentialService 是出入口；聚合创建的事务在 IdentityService
+        // 里一并写（它必须与身份根同一笔）。
+        (
+            "credential",
+            &["services/credential.rs", "services/identity.rs"],
+        ),
+        // 会话：Human 与 AIActor 各自的签发点创建；删除是生命周期动作，
+        // 收在 Database 的三个命名方法里（登出 / 全部撤销 / 过期清理）。
+        (
+            "session",
+            &[
+                "services/auth.rs",
+                "services/ai_actor.rs",
+                "services/database.rs",
+            ],
+        ),
+        // 审计链只有一个写入任务；checkpoint 只有签发器。
+        ("user_activity", &["services/audit_logger.rs"]),
+        ("audit_checkpoint", &["services/audit_integrity.rs"]),
+    ];
+
+    // 一条语句算「写」：CREATE / UPDATE / DELETE / INSERT INTO 后面跟着这张表名，
+    // 或者 create_record / update_record / delete_record 以表名为参数。
+    // WHERE 子句里出现 `type::record('actor_identity', …)` 不算 —— 那是引用。
+    fn writes_table(body: &str, table: &str) -> bool {
+        let production = match body.find("#[cfg(test)]") {
+            Some(i) => &body[..i],
+            None => body,
+        };
+        let stmt = |kw: &str| {
+            production.match_indices(kw).any(|(at, _)| {
+                let rest = &production[at + kw.len()..];
+                // 关键字与表名之间只允许空白、`type::record('` 或 `ONLY`。
+                let head: String = rest.chars().take(80).collect();
+                let head = head
+                    .trim_start()
+                    .trim_start_matches("ONLY")
+                    .trim_start()
+                    .trim_start_matches("type::record('")
+                    .trim_start_matches("type::record(\"");
+                head.starts_with(table)
+                    && !head[table.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+        };
+        stmt("CREATE ")
+            || stmt("UPDATE ")
+            || stmt("DELETE ")
+            || stmt("INSERT INTO ")
+            || production.contains(&format!("create_record(\"{table}\""))
+            || production.contains(&format!("update_record(\"{table}\""))
+            || production.contains("delete_record::<")
+                && production.contains(&format!("(\"{table}\","))
+    }
+
+    let all = sources();
+    let mut violations: Vec<String> = Vec::new();
+    let mut covered = 0usize;
+    for (table, allowed) in ownership {
+        for (file, body) in &all {
+            if writes_table(body, table) {
+                covered += 1;
+                if !allowed.contains(&file.as_str()) {
+                    violations.push(format!(
+                        "{file} 写了 `{table}`，但它不在该领域的写入者名单里"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        covered >= 8,
+        "只找到 {covered} 处领域写入 —— 解析逻辑失效了"
+    );
+    assert!(
+        violations.is_empty(),
+        "存在绕过 canonical writer 的跨域写入:\n  {}",
+        violations.join("\n  ")
+    );
+
+    // 名单里的写入者必须真的在写：一个登记了却不写的模块说明名单过时了。
+    for (table, allowed) in ownership {
+        for writer in *allowed {
+            let body = all
+                .iter()
+                .find(|(f, _)| f == writer)
+                .map(|(_, b)| b.as_str())
+                .unwrap_or_else(|| panic!("写入者名单里的 {writer} 不存在"));
+            assert!(
+                writes_table(body, table),
+                "{writer} 登记为 `{table}` 的写入者，但源码里并没有写它 —— 名单过时了"
+            );
+        }
     }
 }
 
@@ -3154,10 +3276,21 @@ fn j14_readme_test_counts_are_real() {
     // 时间里，不变式数停在 71（真值 76）、集成断言数停在 351（真值 387）。
     // 守卫的作用域比它声称的窄 —— 这个仓库反复撞到的那类问题。
     // 只数**行首**的 `#[test]`：文档注释与字符串里也会出现这几个字符。
-    let invariants = read("tests/conformance.rs")
+    let conformance = read("tests/conformance.rs");
+    let invariants = conformance
         .lines()
         .filter(|l| l.trim() == "#[test]")
         .count();
+    // CONTRIBUTING 说「全部成立，没有一条标 #[ignore]」。数的是行首的属性，
+    // 与上面同理 —— 这行注释本身就含那几个字符。
+    let ignored = conformance
+        .lines()
+        .filter(|l| l.trim().starts_with("#[ignore"))
+        .count();
+    assert_eq!(
+        ignored, 0,
+        "tests/conformance.rs 里有 {ignored} 条 #[ignore]，CONTRIBUTING 却说没有"
+    );
     let min_pass: usize = read("tests/integration.sh")
         .lines()
         .find_map(|l| l.strip_prefix("MIN_PASS=")?.trim().parse().ok())
@@ -3610,6 +3743,26 @@ fn j19_version_is_declared_consistently() {
         );
     }
 
+    // README 的「当前 release」文案必须跟着 Cargo.toml 走。
+    //
+    // 切 0.2.0 时四处版本号都改了，README 的引用示例却停在 v0.1.0 —— 而且紧挨着
+    // 一句「CITATION.cff 是同一份元数据」。两处并存时读者不知道该信哪个。
+    for doc in ["README.md", "README.zh-CN.md"] {
+        let body = read(doc);
+        let expected = format!("SoulAuth v{cargo_version}, TRANTOR LABS");
+        assert!(
+            body.contains(&expected),
+            "{doc} 的软件引用示例没有跟上当前版本 —— 应含「{expected}」"
+        );
+        // 论文证据基线固定在 v0.1.0，不得被当前版本反向改写。
+        assert!(
+            body.contains("SoulAuth v0.1.0, TRANTOR LABS")
+                && body.contains("aaad1abc52c8ab53c2a911f92e2698df95b0a17b"),
+            "{doc} 必须保留论文 V1.0 的证据基线（v0.1.0 / aaad1ab）—— 它是固定的，\
+             不随当前 release 变"
+        );
+    }
+
     // CITATION.cff 必须指向仓库本体，否则「可引用」是空话。
     assert!(
         citation.contains("repository-code:")
@@ -3829,11 +3982,21 @@ fn j22_session_records_how_it_was_established() {
         "auth_time 仍然取 user.last_login_at —— 那个字段会被后来的登录覆盖"
     );
 
-    // 吊销一把密钥要打掉由它建立的会话，而不是这个主体的全部会话。
+    // 吊销一把密钥要打掉由它建立的会话，而不是这个主体的全部会话 —— 而且按
+    // **稳定引用**找，不按 label：label 是显示属性，没有唯一性，两把同名钥匙
+    // 会互相误伤。
+    assert!(
+        field_exists("session", "credential_ref"),
+        "session 缺少稳定的凭证引用列 credential_ref"
+    );
     let ai = read("src/services/ai_actor.rs");
     assert!(
-        ai.contains("AND credential_label = $label"),
-        "吊销密钥必须按凭证标签精确撤销会话 —— 多钥匙的意义正是各自独立失效"
+        ai.contains("AND credential_ref = $credential_ref"),
+        "吊销密钥必须按凭证的稳定引用撤销会话"
+    );
+    assert!(
+        !ai.contains("AND credential_label = $label"),
+        "吊销密钥仍按 label 找会话 —— label 没有唯一性，不得作为撤销键"
     );
 }
 
@@ -3904,75 +4067,83 @@ fn j24_audit_loss_is_observable() {
 
 /// J25 · 迁移演练取的 SQL 块，必须与 CHANGELOG 里的块一一对上
 ///
-/// `tests/migration_walkthrough.sh` 按「第 N 步的第 K 个 ```sql 块」从 CHANGELOG.md
-/// 提取 SQL 执行。这比抄一份进脚本好 —— 文档与脚本不会各说各话 —— 但它引入了
-/// 一种新的静默失败：有人给第 8 步**前面**再加一个代码块，脚本取到的就是另一段
-/// SQL，而演练照样绿。
+/// `tests/migration_walkthrough.sh` 按「版本 V 第 N 步的第 K 个 ```sql 块」从
+/// CHANGELOG.md 提取 SQL 执行。这比抄一份进脚本好 —— 文档与脚本不会各说各话 ——
+/// 但它引入了一种新的静默失败：有人给第 8 步**前面**再加一个代码块，脚本取到的
+/// 就是另一段 SQL，而演练照样绿。
 ///
-/// 所以这里把脚本里每一个 `changelog_sql N K` 调用都对着 CHANGELOG 数一遍：
-/// 第 N 步必须存在，且至少有 K 个 sql 块。块多了（有人新加了未被演练的 SQL）
-/// 也要报：那一块同样是「未经验证的迁移 SQL」。
+/// 所以这里把脚本里每一个 `changelog_sql V N K` 调用都对着 CHANGELOG 数一遍：
+/// 版本 V 的第 N 步必须存在，且至少有 K 个 sql 块。块多了（有人新加了未被演练的
+/// SQL）也要报：那一块同样是「未经验证的迁移 SQL」。**每一个** release 的
+/// Upgrade steps 都数 —— 演练是从 0.1.0 一路升到当前版本的，中间没有哪一版可以
+/// 只写不跑。
 #[test]
 fn j25_migration_walkthrough_reads_the_blocks_it_thinks_it_reads() {
     let script = read("tests/migration_walkthrough.sh");
     let changelog = read("CHANGELOG.md");
 
-    // 只看第一个（Unreleased 的）Upgrade steps 节。
-    let section = changelog
-        .split_once("### Upgrade steps")
-        .map(|(_, rest)| rest)
-        .and_then(|rest| rest.split("\n## ").next())
-        .expect("CHANGELOG 里没有 Upgrade steps");
-
-    // 每一步 → 它的 sql 块数
-    let mut blocks_per_step: Vec<(String, usize)> = Vec::new();
-    let mut current: Option<String> = None;
+    // (版本, 步骤) → 它的 sql 块数。版本由 `## [x.y.z]` 标题给出；一个版本小节
+    // 到下一个 `## ` 为止，Upgrade steps 是它里面的一节。
+    let mut blocks: Vec<((String, String), usize)> = Vec::new();
+    let mut version: Option<String> = None;
+    let mut in_steps = false;
     let mut in_sql = false;
-    for line in section.lines() {
+    for line in changelog.lines() {
+        if let Some(rest) = line.strip_prefix("## [") {
+            version = rest.split(']').next().map(str::to_string);
+            in_steps = false;
+            continue;
+        }
+        if line.starts_with("### ") {
+            in_steps = line.starts_with("### Upgrade steps");
+            continue;
+        }
+        if !in_steps {
+            continue;
+        }
+        let Some(ver) = version.as_ref() else {
+            continue;
+        };
         // 行首 `N. **` 开一步
         let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
         if !digits.is_empty() && line[digits.len()..].starts_with(". **") {
-            current = Some(digits.clone());
-            blocks_per_step.push((digits, 0));
+            blocks.push(((ver.clone(), digits), 0));
             continue;
         }
         let trimmed = line.trim_start();
         if trimmed.starts_with("```sql") {
             in_sql = true;
-            if current.is_some() {
-                if let Some(last) = blocks_per_step.last_mut() {
-                    last.1 += 1;
-                }
+            if let Some(last) = blocks.last_mut() {
+                last.1 += 1;
             }
         } else if trimmed.starts_with("```") && in_sql {
             in_sql = false;
         }
     }
     assert!(
-        blocks_per_step.len() >= 5,
+        blocks.len() >= 10,
         "只解析出 {} 个升级步骤 —— 解析逻辑失效了",
-        blocks_per_step.len()
+        blocks.len()
     );
 
-    // 脚本里的每个 changelog_sql N K
-    let mut wanted: Vec<(String, usize)> = Vec::new();
+    // 脚本里的每个 changelog_sql V N K
+    let mut wanted: Vec<((String, String), usize)> = Vec::new();
     for line in script.lines() {
         let mut from = 0;
         while let Some(rel) = line[from..].find("changelog_sql ") {
             let at = from + rel + "changelog_sql ".len();
-            let rest = &line[at..];
-            let mut parts = rest.split_whitespace();
-            let (Some(n), Some(k)) = (parts.next(), parts.next()) else {
+            let mut parts = line[at..].split_whitespace();
+            let (Some(v), Some(n), Some(k)) = (parts.next(), parts.next(), parts.next()) else {
                 break;
             };
-            // 脚本里写的是 `changelog_sql 4 3)"`：K 后面紧跟 `)"`。只留数字。
+            // 脚本里写的是 `changelog_sql 0.2.0 4 3)"`：K 后面紧跟 `)"`。只留数字。
             let k: usize = k
                 .chars()
                 .take_while(char::is_ascii_digit)
                 .collect::<String>()
                 .parse()
                 .unwrap_or(0);
-            wanted.push((n.to_string(), k));
+            wanted.push(((v.to_string(), n.to_string()), k));
             from = at;
         }
     }
@@ -3982,33 +4153,31 @@ fn j25_migration_walkthrough_reads_the_blocks_it_thinks_it_reads() {
         wanted.len()
     );
 
-    for (step, k) in &wanted {
-        let have = blocks_per_step
+    for ((ver, step), k) in &wanted {
+        let have = blocks
             .iter()
-            .find(|(s, _)| s == step)
+            .find(|((v, s), _)| v == ver && s == step)
             .map(|(_, n)| *n)
-            .unwrap_or_else(|| panic!("演练脚本引用了 CHANGELOG 里不存在的第 {step} 步"));
+            .unwrap_or_else(|| panic!("演练脚本引用了 CHANGELOG 里不存在的 {ver} 第 {step} 步"));
         assert!(
             *k >= 1 && *k <= have,
-            "演练脚本要第 {step} 步的第 {k} 个 sql 块，但 CHANGELOG 里那一步只有 {have} 个"
+            "演练脚本要 {ver} 第 {step} 步的第 {k} 个 sql 块，但 CHANGELOG 里那一步只有 {have} 个"
         );
     }
 
     // 反向：CHANGELOG 里每一个 sql 块都要被演练取到过，否则它就是未经验证的。
-    // 例外：第 5 步的第 2 块（重新链化，刻意的一次性破坏性操作，演练不执行）。
-    for (step, have) in &blocks_per_step {
+    for ((ver, step), have) in &blocks {
         for k in 1..=*have {
-            if step == "5" && k == 2 {
-                continue;
-            }
-            let covered = wanted.iter().any(|(s, kk)| s == step && *kk == k);
-            // 第 4 步第 2 块是两条计数查询，演练用自己的 count() 替代了它。
-            if step == "4" && k == 2 {
+            let covered = wanted
+                .iter()
+                .any(|((v, s), kk)| v == ver && s == step && *kk == k);
+            // 0.2.0 第 4 步第 2 块是两条计数查询，演练用自己的 count() 替代了它。
+            if ver == "0.2.0" && step == "4" && k == 2 {
                 continue;
             }
             assert!(
                 covered,
-                "CHANGELOG 第 {step} 步的第 {k} 个 sql 块没有被 migration_walkthrough.sh 执行 \
+                "CHANGELOG {ver} 第 {step} 步的第 {k} 个 sql 块没有被 migration_walkthrough.sh 执行 \
                  —— 它是一段未经验证的迁移 SQL"
             );
         }

@@ -2,7 +2,7 @@ use crate::{
     config::Config,
     error::{AuthError, Result},
     models::{
-        authentication::{AuthenticationResult, CredentialKind},
+        authentication::{AuthenticationFact, AuthenticationMethod},
         identity_provider::OAuthUserInfo,
         mfa::MfaMethod,
         password_reset::PasswordResetToken,
@@ -76,11 +76,11 @@ impl RequestContext {
 pub struct IssuedSession {
     pub response: AuthResponse,
     pub session_key: String,
-    /// 这次认证的**统一事实**。
+    /// 这次认证的**事实**。
     ///
-    /// `response` 是对外的 wire 形状，带着账户字段（邮箱、用户名）；这一份只有
-    /// 身份事实，和 AIActor 那条路径产出的是同一个类型。见 `models::authentication`。
-    pub authentication: AuthenticationResult,
+    /// `response` 是对外的 wire 形状，带着令牌与账户字段；这一份只有认证事实 ——
+    /// 谁、用什么方法、何时 —— 不拥有令牌。和 AIActor 那条路径产出的是同一个类型。
+    pub authentication: AuthenticationFact,
 }
 
 /// 登录结果：直接放行，或要求补一步 MFA。
@@ -272,10 +272,12 @@ impl AuthService {
             .await?;
         let user = self.touch_last_login(user, ctx).await?;
 
+        // 外部联合没有本地凭证：不造假引用。
         self.create_session_with_metadata(
             user,
             ctx,
-            (CredentialKind::ExternalIdentity, Some("google".to_string())),
+            vec![AuthenticationMethod::ExternalIdentity],
+            vec![],
         )
         .await
     }
@@ -297,7 +299,8 @@ impl AuthService {
         self.create_session_with_metadata(
             user,
             ctx,
-            (CredentialKind::ExternalIdentity, Some("github".to_string())),
+            vec![AuthenticationMethod::ExternalIdentity],
+            vec![],
         )
         .await
     }
@@ -498,8 +501,14 @@ impl AuthService {
         }
 
         let created_user = self.touch_last_login(created_user, ctx).await?;
+        let password_ref = self.password_ref_of(&created_user).await?;
         let issued = self
-            .create_session_with_metadata(created_user, ctx, (CredentialKind::Password, None))
+            .create_session_with_metadata(
+                created_user,
+                ctx,
+                vec![AuthenticationMethod::Password],
+                password_ref.into_iter().collect(),
+            )
             .await?;
         Ok((issued.response, Some(issued.session_key)))
     }
@@ -527,15 +536,26 @@ impl AuthService {
             .as_ref()
             .and_then(|u| u.subject_id.clone())
             .unwrap_or_else(|| new_thing("actor_identity"));
-        let stored_hash = self.credentials.active_password_hash(&probe_actor).await?;
+        let stored = self.credentials.active_password(&probe_actor).await?;
 
-        let (Some(user), Some(password_hash)) = (found, stored_hash) else {
+        let (Some(user), Some(credential)) = (found, stored) else {
             // 邮箱没注册过、或者这个账号没有可用口令（纯 OAuth 账号、口令被
             // 吊销）。两种情况都要把 Argon2 的时间花掉，否则响应快得多，
             // 等于告诉调用方"这个邮箱不存在"。
             spend_password_verification_time().await;
             return Err(AuthError::InvalidCredentials);
         };
+        // 凭证的稳定引用 —— 进认证事实，供撤销传播与审计归因用。
+        let password_ref = credential
+            .id
+            .as_ref()
+            .map(record_address)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let password_hash = credential
+            .secret_hash
+            .clone()
+            .ok_or(AuthError::InvalidCredentials)?;
 
         verify_password_blocking(password_hash, password).await?;
 
@@ -581,7 +601,12 @@ impl AuthService {
 
         let user = self.touch_last_login(user, ctx).await?;
         let response = self
-            .create_session_with_metadata(user, ctx, (CredentialKind::Password, None))
+            .create_session_with_metadata(
+                user,
+                ctx,
+                vec![AuthenticationMethod::Password],
+                password_ref,
+            )
             .await?;
         Ok(LoginOutcome::Authenticated(Box::new(response)))
     }
@@ -590,11 +615,14 @@ impl AuthService {
     ///
     /// `second_factor` 由路由传入：验 TOTP 还是用掉一枚备用恢复码，在安全上
     /// 不是一回事（后者一次性、且通常意味着用户丢了验证器），审计里要分得开。
+    ///
+    /// 产出的事实是 `[password, <second_factor>]`：第一因子在第一步已经成立，
+    /// 它是这次认证的一部分。只记第二因子会把两因子登录记成一因子。
     pub async fn complete_mfa_login(
         &self,
         user_id: &str,
         ctx: &RequestContext,
-        second_factor: CredentialKind,
+        second_factor: AuthenticationMethod,
     ) -> Result<IssuedSession> {
         let user = self
             .db
@@ -610,8 +638,26 @@ impl AuthService {
         Self::ensure_account_usable(&user)?;
 
         let user = self.touch_last_login(user, ctx).await?;
-        self.create_session_with_metadata(user, ctx, (second_factor, None))
-            .await
+        let password_ref = self.password_ref_of(&user).await?;
+        self.create_session_with_metadata(
+            user,
+            ctx,
+            vec![AuthenticationMethod::Password, second_factor],
+            password_ref.into_iter().collect(),
+        )
+        .await
+    }
+
+    /// 这个账户当前可用口令凭证的稳定引用（`credential:xxx`）。没有则 `None`。
+    async fn password_ref_of(&self, user: &User) -> Result<Option<String>> {
+        let Some(actor_ref) = user.subject_id.as_ref() else {
+            return Ok(None);
+        };
+        Ok(self
+            .credentials
+            .active_password(actor_ref)
+            .await?
+            .and_then(|c| c.id.as_ref().map(record_address)))
     }
 
     /// 登录闸门。判定在 [`User::ensure_usable`]，与令牌闸门、密码重置、
@@ -646,14 +692,19 @@ impl AuthService {
 
     /// 签发会话。
     ///
-    /// `credential` 是**本次实际验证的那一类凭证**，由调用方声明 —— 这个函数
-    /// 自己看不出来调用它的是口令登录、MFA 第二步还是邮件链接，而「用什么证明
-    /// 的」是审计归因要用的事实，不能在这里含糊成「通过了」。
+    /// `methods` 是**本次实际通过的方法集合**，由调用方声明 —— 这个函数自己看不
+    /// 出来调用它的是口令登录、MFA 第二步还是邮件链接，而「用什么证明的」是审计
+    /// 归因要用的事实，不能在这里含糊成「通过了」。MFA 第二步传的是两个方法，
+    /// 不是一个：第一因子已经成立，它是事实的一部分。
+    ///
+    /// `credential_refs` 是支撑本次认证的本地凭证的稳定引用；外部联合与邮件链接
+    /// 没有本地凭证，传空。
     async fn create_session_with_metadata(
         &self,
         user: User,
         ctx: &RequestContext,
-        credential: (CredentialKind, Option<String>),
+        methods: Vec<AuthenticationMethod>,
+        credential_refs: Vec<String>,
     ) -> Result<IssuedSession> {
         let now = Utc::now();
         let exp = now + Duration::seconds(self.session_ttl_seconds());
@@ -690,7 +741,6 @@ impl AuthService {
         )
         .map_err(|e| AuthError::TokenError(e.to_string()))?;
 
-        let (credential_kind, credential_label) = credential;
         let session = Session {
             id: Some(session_id),
             user_id: actor_ref.clone(),
@@ -701,8 +751,10 @@ impl AuthService {
             ip_address: ctx.ip_address.clone(),
             // 认证来源随会话一起落库，而不是只进审计详情：撤销传播与
             // `auth_time` 都要读它。
-            credential_kind: Some(credential_kind.as_str().to_string()),
-            credential_label: credential_label.clone(),
+            // 会话行只记主方法与首个凭证引用：它是投影，不是事实本身。
+            credential_kind: methods.first().map(|m| m.as_str().to_string()),
+            credential_ref: credential_refs.first().cloned(),
+            credential_label: None,
             authenticated_at: Some(now.timestamp()),
         };
 
@@ -711,13 +763,8 @@ impl AuthService {
         // `has_password` 不再能从账户行推导，只能问凭证。
         let has_password = self.credentials.has_password(&actor_ref).await?;
 
-        let authentication = AuthenticationResult::human(
-            actor_address,
-            credential_kind,
-            credential_label,
-            token.clone(),
-            exp.timestamp(),
-        );
+        let authentication =
+            AuthenticationFact::human(actor_address, methods, credential_refs, now.timestamp());
 
         Ok(IssuedSession {
             response: AuthResponse {
@@ -781,8 +828,13 @@ impl AuthService {
             .ok_or(AuthError::UserNotFound)?;
 
         let verified_user = self.touch_last_login(verified_user, ctx).await?;
-        self.create_session_with_metadata(verified_user, ctx, (CredentialKind::EmailLink, None))
-            .await
+        self.create_session_with_metadata(
+            verified_user,
+            ctx,
+            vec![AuthenticationMethod::EmailLink],
+            vec![],
+        )
+        .await
     }
 
     pub async fn initialize_password(&self, user_id: &str, password: &str) -> Result<User> {

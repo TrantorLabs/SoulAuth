@@ -206,7 +206,7 @@ Detection、Key Lifecycle 与 Tamper-evident Audit 建立持续保护。
 
 ```text
 axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
-单元测试 196 项（零外部依赖）· 架构不变式 77 条 · 集成测试 28 组 391 项断言
+单元测试 199 项（零外部依赖）· 架构不变式 77 条 · 集成测试 28 组 393 项断言
 ```
 
 ---
@@ -390,8 +390,8 @@ curl -X POST localhost:8080/api/auth/logout -H "Authorization: Bearer $TOKEN"
 两层，分工不同，谁也替代不了谁。
 
 ```bash
-cargo test              # 单元测试 196 项，零外部依赖
-cargo build && ./tests/integration.sh   # 28 组 391 项断言
+cargo test              # 单元测试 199 项，零外部依赖
+cargo build && ./tests/integration.sh   # 28 组 393 项断言
 ```
 
 **单元测试**管纯逻辑与一致性不变量：权限名与种子数据是否对得上、端点路径
@@ -532,11 +532,21 @@ SoulAuth 由 **TRANTOR LABS｜Singapore** 构建。TRANTOR LABS 关注的不是�
 请同时给出 tag 与 commit，不要只给仓库地址 —— `main` 会往前走，一个解析到「当前状态」
 的引用日后无法核对。
 
-> SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth
+要引用的是两件不同的东西，钉在不同的版本上：
 
-[CITATION.cff](CITATION.cff) 是同一份元数据的机器可读形式，GitHub 会通过
-*Cite this repository* 按钮把它转成 BibTeX。每个 Release 都记录它构建自哪个 commit，
-以及归档文件的校验和。
+- **你实际使用的软件。** 引用你真正跑的那个 release。当前是 **v0.3.0**；
+  [CITATION.cff](CITATION.cff) 始终描述当前 release，GitHub 会通过 *Cite this
+  repository* 按钮把它转成 BibTeX。
+
+  > SoulAuth v0.3.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.3.0
+
+- **SoulAuth 论文（V1.0）的证据基线。** 论文的测量与主张针对的是 **v0.1.0**，commit
+  `aaad1abc52c8ab53c2a911f92e2698df95b0a17b`。这个引用是固定的：之后的 release 不改变
+  论文评价过的那份实现。
+
+  > SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.1.0
+
+每个 Release 都记录它构建自哪个 commit，以及归档文件的校验和。
 
 ---
 

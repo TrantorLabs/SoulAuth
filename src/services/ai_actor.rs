@@ -45,7 +45,7 @@ use crate::{
             ALLOWED_ALGORITHMS, CHALLENGE_TTL_SECONDS, ED25519_PUBLIC_KEY_LEN,
             ED25519_SIGNATURE_LEN,
         },
-        authentication::AuthenticationResult,
+        authentication::AuthenticationFact,
         session::Session,
     },
     services::{database::Database, identity::IdentityService},
@@ -70,7 +70,20 @@ pub struct IssuedChallenge {
     pub algorithm: &'static str,
 }
 
-// 认证成功后的产物是 `models::authentication::AuthenticationResult` —— 和 Human
+/// 认证成功的产物：**事实**与**令牌投影**分开。
+///
+/// 事实（`AuthenticationFact`）是审计要记、OIDC 要投影的东西，它不拥有令牌；令牌
+/// 是把事实延续成会话的产物，由这里同时交出去给线上响应用。两者放在一个对象里
+/// 会让「认证成立」依赖「签出了一枚 bearer」。
+pub struct AuthenticatedActor {
+    pub fact: AuthenticationFact,
+    pub token: String,
+    pub expires_at: i64,
+    /// 用的是哪把钥匙 —— 线上响应要它（`j8` 冻结的形状）；撤销传播**不**用它。
+    pub credential_label: String,
+}
+
+// 认证成功后的事实是 `models::authentication::AuthenticationFact` —— 和 Human
 // 那条路径完全同一个类型。这里原先有一个只给 AIActor 用的 `ActorSession`：字段
 // 几乎一样，但类型不同，于是下游每多一类主体就要多一个分支，而「两类主体进入
 // 同一套 Actor Identity Contract」在代码里没有任何对应物。见 `b3`。
@@ -177,7 +190,7 @@ impl AiActorService {
                  SET status = $revoked, revoked_at = $now \
                  WHERE actor_identity_id = type::record('actor_identity', $actor) \
                    AND status = $active \
-                 RETURN type::string(id) AS id, label",
+                 RETURN type::string(id) AS id",
                 serde_json::json!({
                     "cred": credential_key,
                     "actor": actor_key,
@@ -203,22 +216,23 @@ impl AiActorService {
         //
         // 只打掉这把钥匙的会话，不是这个主体的全部会话：那会把「换钥匙」变成
         // 「全体下线」，而换钥匙本该是可以平滑做的。
-        // 标签来自刚才那条 UPDATE 的返回，不另查一次：中间那一瞬凭证可能已经
-        // 被别的请求改过，而我们要打掉的是**刚刚吊销的那一把**的会话。
-        let label = updated
+        // 按凭证的**稳定引用**打会话，不按 label：label 是显示属性，没有唯一性
+        // —— 两把钥匙可以同名，按 label 撤销会误伤另一把、或者一把都打不中。
+        // 引用取自刚才那条 UPDATE 的返回：我们要打掉的是**刚刚吊销的那一把**。
+        let credential_ref = updated
             .first()
-            .and_then(|row| row.get("label"))
+            .and_then(|row| row.get("id"))
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if !label.is_empty() {
+        if !credential_ref.is_empty() {
             self.db
                 .raw_query(
                     "ai_actor_revoke_sessions_of_credential",
                     "DELETE session \
                      WHERE user_id = type::record('actor_identity', $actor) \
-                       AND credential_label = $label",
-                    serde_json::json!({ "actor": actor_key, "label": label }),
+                       AND credential_ref = $credential_ref",
+                    serde_json::json!({ "actor": actor_key, "credential_ref": credential_ref }),
                 )
                 .await?;
         }
@@ -357,7 +371,7 @@ impl AiActorService {
         signature_b64: &str,
         user_agent: &str,
         ip_address: &str,
-    ) -> Result<AuthenticationResult> {
+    ) -> Result<AuthenticatedActor> {
         // 算法不接受协商。放在最前是因为它最便宜，且不需要碰数据库。
         if !ALLOWED_ALGORITHMS.contains(&algorithm) {
             return Err(AuthError::BadRequest(format!(
@@ -531,7 +545,7 @@ impl AiActorService {
         credential: &AiActorCredential,
         user_agent: &str,
         ip_address: &str,
-    ) -> Result<AuthenticationResult> {
+    ) -> Result<AuthenticatedActor> {
         use jsonwebtoken::{encode, EncodingKey, Header};
 
         let actor_id = actor
@@ -539,6 +553,12 @@ impl AiActorService {
             .clone()
             .ok_or_else(|| AuthError::DatabaseError("actor_identity 没有 id".into()))?;
         let actor_key = record_id_key_to_string(&actor_id);
+        // 凭证的稳定引用（`ai_actor_credential:xxx`）。会话行与认证事实都记它。
+        let credential_ref = credential
+            .id
+            .as_ref()
+            .map(|id| format!("ai_actor_credential:{}", record_id_key_to_string(id)))
+            .ok_or_else(|| AuthError::DatabaseError("ai_actor_credential 没有 id".into()))?;
 
         let now = Utc::now();
         let ttl = if self.config.jwt_expiration > 0 {
@@ -580,21 +600,27 @@ impl AiActorService {
             // 全部会话一起打掉 —— 而多钥匙存在的全部意义就是它们可以各自独立
             // 失效。
             credential_kind: Some(
-                crate::models::authentication::CredentialKind::Ed25519Key
+                crate::models::authentication::AuthenticationMethod::Ed25519Key
                     .as_str()
                     .to_string(),
             ),
+            // 稳定引用，撤销传播按它找；label 只是展示。
+            credential_ref: Some(credential_ref.clone()),
             credential_label: Some(credential.label.clone()),
             authenticated_at: Some(now.timestamp()),
         };
         self.db.create_record("session", &session).await?;
 
-        Ok(AuthenticationResult::ai_actor(
-            format!("actor_identity:{actor_key}"),
-            credential.label.clone(),
+        Ok(AuthenticatedActor {
+            fact: AuthenticationFact::ai_actor(
+                format!("actor_identity:{actor_key}"),
+                credential_ref,
+                now.timestamp(),
+            ),
             token,
-            exp.timestamp(),
-        ))
+            expires_at: exp.timestamp(),
+            credential_label: credential.label.clone(),
+        })
     }
 }
 

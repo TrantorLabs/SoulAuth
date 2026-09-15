@@ -31,6 +31,7 @@ grow just because an entry is inconvenient.
 | Dependency | Advisory | What was done |
 |---|---|---|
 | `ammonia 4.1.2` (via `surrealdb-core`) | RUSTSEC-2026-0193, RUSTSEC-2026-0213 (XSS in HTML sanitiser) | Bumped to 4.1.4 in `Cargo.lock`. SurrealDB only calls it from the SurrealQL `string::html::*` functions, which no query in this project uses, so the flaw was not reachable here — but the fix was free and the dependency tree got eight crates smaller. |
+| `rustls 0.23.36` (via `surrealdb`, `reqwest`, `tokio-tungstenite`) | RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted across encryption-level boundaries) | Bumped to 0.23.45 in `Cargo.lock`. This one **was** reachable: `rustls` is the TLS client for the database connection, which production requires to be encrypted, and for outbound OAuth token exchange. |
 
 ### Why `axum` / `jsonwebtoken` aren't upgraded to clear `ring 0.16`
 
