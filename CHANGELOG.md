@@ -18,9 +18,10 @@ break them is the contract, the schema and the configuration:
 | A new optional configuration key | patch |
 | Internal refactoring, bug fixes, documentation | patch |
 
-**On 1.0:** `tests/conformance.rs` still carries 1 architecture invariant that does not
-hold yet. Releasing 1.0 while the suite says a stage is unfinished would claim something
-the tests themselves contradict, so 1.0 waits until that count reaches zero.
+**On 1.0:** every architecture invariant in `tests/conformance.rs` holds and none is
+`#[ignore]`d, so the suite no longer stands between the project and 1.0. What does is
+the contract: 1.0 is cut once `contracts/openapi.yaml` has gone through a full minor
+release without a path, field or error code being removed or renamed.
 
 Format note: this file is kept in English only. The rest of the repository keeps a
 Chinese copy of each document, but a changelog is appended to on every release and a
@@ -28,7 +29,84 @@ translated copy drifts within weeks.
 
 ## [Unreleased]
 
-Nothing yet.
+## [0.3.0] - 2026-09-15
+
+The release that closes the structural audit of 0.2.0. Authentication is now recorded as
+a fact — who, by which methods, when, through which credentials — separate from the
+token that a session projects from it; sessions are bound to the credential that
+established them by stable id; and the upgrade path from 0.1.0 is proven to land on the
+current schema rather than merely to return OK.
+
+### Changed
+
+- **The authentication fact no longer owns the token.** `AuthenticationFact` (formerly
+  `AuthenticationResult`) carries who was authenticated, by which methods, when, and
+  through which local credentials — and nothing else. The bearer token and its expiry are
+  a projection of that fact into a session, produced by the issuance path; they are not
+  part of the fact. Audit records the fact; OIDC projects the fact; a session extends it.
+- **Authentication methods are a set, and they are called methods.** A password-plus-TOTP
+  login is recorded as `[password, totp]`, not as a TOTP login with the first factor
+  forgotten. The enum is `AuthenticationMethod`: `external_identity` and `email_link` are
+  not local credentials, and calling them `CredentialKind` said otherwise. Local
+  credentials that supported the authentication are referenced separately by stable id,
+  and that list is empty for federation and mail links rather than filled with a fake
+  reference.
+- **Sessions reference the credential that established them by stable id.** Revoking an
+  AI-actor key ends the sessions established by that key's `ai_actor_credential:…`
+  record, not the sessions whose `credential_label` happened to match — a label is a
+  display attribute with no uniqueness, so two keys with the same name would have
+  revoked each other. `session.credential_ref` is new; `credential_label` stays for
+  display only.
+- **Successful human authentication is attributed at the moment the fact is established.**
+  The audit event carries the authenticated `actor_identity_id` directly instead of a
+  `user_id` to be re-resolved through `user.subject_id` when the queue drains. Once the
+  authentication has proven who, the historical record does not re-derive it later from
+  a surrounding object.
+- **The repository-separation invariant now checks write responsibility, not class
+  names.** `g1` used to require six types named `*Repository` to exist, which six empty
+  shells would satisfy while a single `Database` handle stayed writable from everywhere.
+  It now asserts, from the source, that each domain source — identity root and its
+  attachments, credentials, sessions, the audit chain, checkpoints — is written only by
+  its declared writers, and that every declared writer actually writes. The ownership
+  table in the test is the architecture's write-responsibility declaration; adding a
+  writer means editing it, which is visible in review.
+
+### Fixed
+
+- **The upgrade guide no longer suggests deleting historical audit events.** Step 5 used
+  to offer `DELETE user_activity WHERE chain_id != NONE` as the way to a clean integrity
+  report. That contradicts what the audit log is for. Rows from 0.1.0 are now moved
+  outside the chain and marked `details.integrity_boundary = 'pre-0.2.0'`; the verifier
+  counts them as `unchained`, the 0.2.0 chain starts clean, and nothing is lost.
+- **Step 5's statements were in an order that fails.** Removing `user_id` first makes the
+  SCHEMAFULL table refuse any later update to rows still carrying that key, so the
+  boundary update ran into an error. It now runs before the rename.
+  `tests/migration_walkthrough.sh` is what found it.
+- **The migration walkthrough now proves the final database is the 0.2.0 schema.** It
+  re-imports `schema.sql` after the migration, asserts `user_activity_user_idx` and
+  `user_profile_user_idx` are rebuilt on `actor_identity_id`, and inserts a duplicate
+  profile to show the UNIQUE index actually rejects it — rather than stopping at "every
+  migration statement returned OK".
+- **README distinguishes the software you run from the paper's evidence baseline.** The
+  citation example still said v0.1.0 next to a claim that CITATION.cff was "the same
+  metadata". Both are now stated separately: cite the release you use (currently 0.2.0);
+  the SoulAuth paper (V1.0) was evaluated against v0.1.0 at `aaad1ab`, and that reference
+  does not move. `j19` checks the first tracks `Cargo.toml` and the second is preserved.
+
+### Upgrade steps
+
+1. **Re-import `schema.sql`.** `session` gains an optional `credential_ref` column; the
+   import is idempotent and adds nothing else. Sessions created by this release fill it.
+
+2. **End AI-actor sessions established before this release.** They were created before
+   `credential_ref` existed, so revoking the key that established them can no longer find
+   them — the old join was the key's label, and labels are not unique. Each agent
+   re-authenticates with its key on the next call, and from then on every one of its
+   sessions is bound to a credential id. Human sessions are not touched.
+
+   ```sql
+   DELETE session WHERE user_id.actor_kind = 'ai_actor' AND credential_ref = NONE;
+   ```
 
 ## [0.2.0] - 2026-09-12
 
@@ -261,8 +339,31 @@ shape, on every push. Two of them were wrong before that script existed.
    REMOVE FIELD password ON TABLE user;
    ```
 
-5. **Migrate `user_activity.user_id` to `actor_identity_id`.** The column is renamed, and
-   the integrity report reads the new name:
+5. **Migrate `user_activity.user_id` to `actor_identity_id`, marking the integrity
+   boundary first.** Order matters here, and `tests/migration_walkthrough.sh` is what
+   found that out: the column is removed in the second block, and once it is gone the
+   table is SCHEMAFULL against rows that still carry the old key — any later `UPDATE`
+   touching those rows is refused. So the boundary update runs before the rename.
+
+   **Integrity boundary.** Rows written by 0.1.0 carry a digest computed over a value
+   that is not in the row, so they cannot be re-derived by the 0.2.0 verifier. That is a
+   fact about 0.1.0's chain, not about those events: they happened, and they stay. Do not
+   delete them to obtain a clean report — the audit log's whole purpose is that history is
+   not rewritten to make a dashboard green.
+
+   Move them outside the chain and mark why. The verifier already counts rows with no
+   `seq` as `unchained` rather than as a break, so the 0.2.0 chain starts clean and the
+   report says exactly what it should: N events precede the boundary and are preserved,
+   everything after it is verified.
+
+   ```sql
+   UPDATE user_activity
+     SET chain_id = NONE, seq = NONE, previous_hash = NONE, event_hash = NONE,
+         details.integrity_boundary = 'pre-0.2.0'
+     WHERE chain_id != NONE;
+   ```
+
+   Then rename the attribution column:
 
    ```sql
    UPDATE user_activity SET actor_identity_id = user_id WHERE actor_identity_id = NONE;
@@ -270,17 +371,8 @@ shape, on every push. Two of them were wrong before that script existed.
    REMOVE INDEX user_activity_user_idx ON TABLE user_activity;
    ```
 
-   Re-import `schema.sql` after the `REMOVE INDEX` to rebuild it on the new column.
-
-   Rows written before this release carry a digest computed over a value that is not in
-   the row, so they cannot be re-derived and the report will flag the first of them. The
-   chain is verifiable from this release onward. If you want a clean report, re-chain the
-   existing rows once — this is a deliberate one-time rewrite of hashes for rows whose
-   digests were never verifiable, not a routine operation:
-
-   ```sql
-   DELETE user_activity WHERE chain_id != NONE;
-   ```
+   Re-import `schema.sql` after the `REMOVE INDEX` to rebuild it on the new column
+   (step 8 does this).
 
    Consumers reading `user_id` from `/api/audit/activity-summary`, `security-report` or an
    activity log must read `actor_identity_id`; the value is unchanged.

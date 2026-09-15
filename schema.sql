@@ -262,6 +262,8 @@ DEFINE FIELD IF NOT EXISTS ip_address ON session TYPE string;
 -- 凭证无法精确影响由它建立的会话，而 OIDC 的 `auth_time` 只能去拿
 -- `user.last_login_at` —— 一个会被后来的登录覆盖的字段。
 DEFINE FIELD IF NOT EXISTS credential_kind ON session TYPE option<string>;
+-- 稳定引用；撤销传播按它找。label 只是展示，没有唯一性，不得作为撤销键。
+DEFINE FIELD IF NOT EXISTS credential_ref ON session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS credential_label ON session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS authenticated_at ON session TYPE option<number>;
 DEFINE INDEX IF NOT EXISTS session_token_hash_idx ON session COLUMNS token_hash UNIQUE;

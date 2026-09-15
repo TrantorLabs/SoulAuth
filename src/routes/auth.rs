@@ -18,7 +18,7 @@ use crate::{
     models::user_activity::{ActivityCategory, ActivityStatus},
     models::{
         account_lockout::LockoutCheckResult,
-        authentication::{AuthenticationResult, CredentialKind},
+        authentication::{AuthenticationFact, AuthenticationMethod},
         mfa::{
             EnableTotpRequest, MfaMethod, MfaStatusResponse, TotpSetupResponse,
             UseBackupCodeRequest, VerifyTotpRequest,
@@ -97,21 +97,17 @@ pub struct DisableMfaRequest {
 /// 记「用什么证明的」而不只是「登录成功了」：同一个主体用口令登录、用备用恢复码
 /// 过 MFA、还是走外部 IdP，在安全上是三件不同的事。归因用身份根地址而不是 user
 /// 行 —— 账户实现可以变，身份根不变。
-fn authentication_details(auth: &AuthenticationResult) -> serde_json::Value {
+fn authentication_details(auth: &AuthenticationFact) -> serde_json::Value {
     let mut details = serde_json::Map::new();
-    details.insert(
-        "actor_identity_id".to_string(),
-        json!(auth.actor_identity_id),
-    );
     details.insert("actor_kind".to_string(), json!(auth.actor_kind.as_str()));
-    details.insert(
-        "credential_kind".to_string(),
-        json!(auth.credential_kind.as_str()),
-    );
-    // 没有标识时**不写这个键**，而不是写一个 null：口令凭证没有标识可言，
-    // 而数据库未必会把 null 存下来 —— 读回来少一个键，摘要就对不上了。
-    if let Some(label) = &auth.credential_label {
-        details.insert("credential_label".to_string(), json!(label));
+    // 方法是集合：`password + totp` 记成两项，不是「一次 totp 登录」。
+    details.insert("methods".to_string(), json!(auth.method_names()));
+    details.insert("authenticated_at".to_string(), json!(auth.authenticated_at));
+    // 空集合时**不写这个键**：外部联合没有本地凭证，而数据库未必把空数组存成
+    // 空数组 —— 读回来少一个键，摘要就对不上了。归因主体不进 details：它走
+    // `with_actor`，是外键，不是自由文本。
+    if !auth.credential_refs.is_empty() {
+        details.insert("credential_refs".to_string(), json!(auth.credential_refs));
     }
     serde_json::Value::Object(details)
 }
@@ -454,7 +450,9 @@ async fn perform_login(
                     ctx.ip_address.clone(),
                     ctx.user_agent.clone(),
                 )
-                .with_user(issued.response.user.id.clone())
+                // 归因在事实成立时冻结：直接用已认证的身份根，不在异步写入时
+                // 再经 user.subject_id 重新推导。
+                .with_actor(issued.authentication.actor_identity_id.clone())
                 .with_details(authentication_details(&issued.authentication)),
             );
             (
@@ -694,7 +692,7 @@ async fn mfa_login_verify(
 
     // 记下验的是哪一类第二因子。用掉一枚备用恢复码与验一次 TOTP 在安全上不是
     // 一回事 —— 前者一次性，而且通常意味着用户丢了验证器 —— 审计要分得开。
-    let mut second_factor = CredentialKind::Totp;
+    let mut second_factor = AuthenticationMethod::Totp;
     let verification = match (request.totp_code, request.backup_code) {
         (Some(totp_code), _) => {
             auth_service
@@ -703,7 +701,7 @@ async fn mfa_login_verify(
                 .await
         }
         (None, Some(backup_code)) => {
-            second_factor = CredentialKind::BackupCode;
+            second_factor = AuthenticationMethod::BackupCode;
             auth_service
                 .mfa()
                 .use_backup_code(&challenge.user_id, UseBackupCodeRequest { backup_code })
@@ -767,7 +765,7 @@ async fn mfa_login_verify(
             ctx.ip_address.clone(),
             ctx.user_agent.clone(),
         )
-        .with_user(challenge.user_id.clone())
+        .with_actor(issued.authentication.actor_identity_id.clone())
         .with_details(merge_details(
             json!({ "mfa": true }),
             authentication_details(&issued.authentication),
@@ -1037,7 +1035,7 @@ async fn google_callback(
             ctx.ip_address.clone(),
             ctx.user_agent.clone(),
         )
-        .with_user(issued.response.user.id.clone())
+        .with_actor(issued.authentication.actor_identity_id.clone())
         .with_details(merge_details(
             json!({ "provider": "google" }),
             authentication_details(&issued.authentication),
@@ -1074,7 +1072,7 @@ async fn github_callback(
             ctx.ip_address.clone(),
             ctx.user_agent.clone(),
         )
-        .with_user(issued.response.user.id.clone())
+        .with_actor(issued.authentication.actor_identity_id.clone())
         .with_details(merge_details(
             json!({ "provider": "github" }),
             authentication_details(&issued.authentication),

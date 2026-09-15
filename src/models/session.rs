@@ -24,10 +24,15 @@ pub struct Session {
     #[serde(default)]
     pub credential_kind: Option<String>,
 
-    /// 凭证的可读标识（AI 主体是密钥标签，外部身份是 provider 名）。
+    /// 建立这个会话的本地凭证的**稳定引用**（`credential:xxx` /
+    /// `ai_actor_credential:xxx`）。外部联合与邮件链接没有本地凭证，为 `None`。
     ///
-    /// 有了它，「吊销这把钥匙」才能精确地只打掉由它建立的会话，而不是
-    /// 「这个主体的全部会话」。
+    /// 撤销传播按它找会话。此前按 `credential_label` 找 —— label 是显示属性，
+    /// 没有唯一性，两把同名钥匙会互相误伤。
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+
+    /// 凭证的可读标识，只做展示。**不得**作为撤销键。
     #[serde(default)]
     pub credential_label: Option<String>,
 

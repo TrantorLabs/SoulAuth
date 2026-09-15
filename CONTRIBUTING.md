@@ -15,8 +15,8 @@ fixes, documentation and obviously-scoped bug fixes need no issue.
 ## Running the checks
 
 ```bash
-cargo test                                # 196 unit tests + 77 conformance invariants
-cargo build && ./tests/integration.sh     # 28 groups, 391 assertions, real database
+cargo test                                # 199 unit tests + 77 conformance invariants
+cargo build && ./tests/integration.sh     # 28 groups, 393 assertions, real database
 ./tests/deployment_walkthrough.sh         # executes DEPLOYMENT.md from an empty database
 ./tests/migration_walkthrough.sh          # executes the CHANGELOG upgrade steps against a previous-release database
 ```
@@ -58,14 +58,14 @@ snapshot was taken from a clean tree, but not that it is up to date.
 ## Architecture invariants
 
 `tests/conformance.rs` asserts architectural rules against the source and the schema —
-things like "an ActorIdentity is not a credential" and "the audit log is chained". One
-of them is `#[ignore]`d because it does not hold yet — repositories are not separated by
-domain. `cargo test --test conformance -- --ignored` lists them.
+things like "an ActorIdentity is not a credential", "the audit log is chained" and
+"each domain source is written only by its declared writers". All of them hold and none
+is `#[ignore]`d; `j14` fails the build if the count in this file drifts from the suite.
 
 **Relaxing an assertion in that file is a bigger change than it looks.** If your work
 makes one fail, the question to answer in the pull request is which is wrong — the code
-or the invariant. Both answers are acceptable; silently loosening the assertion is not.
-When you complete a stage, delete its `#[ignore]` in the same pull request.
+or the invariant. Both answers are acceptable; silently loosening the assertion is not,
+and neither is marking it `#[ignore]` to get a green build.
 
 ## Commit messages
 

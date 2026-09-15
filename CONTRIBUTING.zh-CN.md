@@ -13,8 +13,8 @@
 ## 本地要跑什么
 
 ```bash
-cargo test                                # 196 项单测 + 77 条一致性不变式
-cargo build && ./tests/integration.sh     # 28 组、391 项断言，跑在真实数据库上
+cargo test                                # 199 项单测 + 77 条一致性不变式
+cargo build && ./tests/integration.sh     # 28 组、393 项断言，跑在真实数据库上
 ./tests/deployment_walkthrough.sh         # 从空库执行一遍 DEPLOYMENT.md
 ./tests/migration_walkthrough.sh          # 对上一版形状的库执行一遍 CHANGELOG 的升级步骤
 ```
@@ -55,12 +55,12 @@ CI 跑的是 `cargo clippy --all-targets -- -D warnings`，所以一条警告就
 ## 架构不变式
 
 `tests/conformance.rs` 对着源码与 schema 断言架构规则 —— 比如「ActorIdentity 不是
-Credential」「审计日志是链式的」。其中 1 条标了 `#[ignore]`，因为它还不成立 ——
-Repository 未按领域分离。用 `cargo test --test conformance -- --ignored` 可以列出。
+Credential」「审计日志是链式的」「每个领域数据源只由声明的写入方写入」。全部成立，
+没有一条标 `#[ignore]`；本文件里的条数与套件不一致时 `j14` 会让构建失败。
 
 **放松那个文件里的断言，是比它看起来更大的改动。** 如果你的改动让某条挂了，
 PR 里要回答的是「错的是代码还是这条不变式」。两个答案都可以接受，
-悄悄把断言改松不行。完成一个 Stage 时，在同一个 PR 里删掉它的 `#[ignore]`。
+悄悄把断言改松不行，为了让构建变绿给它标 `#[ignore]` 也不行。
 
 ## 提交信息
 

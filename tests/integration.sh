@@ -878,6 +878,17 @@ req POST /api/auth/mfa/login-verify -H 'Content-Type: application/json' \
     -d "{\"temp_token\":\"${TEMP}\",\"totp_code\":\"${CODE_NOW}\"}" > /dev/null
 [ -n "$(jget token)" ] && ok "真实验证码完成 MFA 登录" || bad "真实验证码完成 MFA 登录" "$(body)"
 
+# 认证事实必须保留完整方法集合：password + totp 是两个方法，不是「一次 totp 登录」。
+# 只记第二因子会把两因子登录记成一因子 —— 任何按方法集合做判断的策略都会因此出错。
+sleep 1   # 审计异步落库
+# `SELECT VALUE x … ORDER BY y` 在 SurrealDB 3.x 是解析错误（排序键必须出现在投影里），
+# 而 sql 助手会把解析错误吞成空串 —— 所以把 timestamp 一起投影出来，再取 methods。
+MFA_METHODS="$(sql "SELECT details.methods AS methods, timestamp FROM user_activity WHERE action = 'login_success' AND details.mfa = true ORDER BY timestamp DESC LIMIT 1" | python3 -c "
+import json,sys
+try: print(','.join(json.load(sys.stdin)[0]['methods']))
+except Exception: print('')")"
+eq "password,totp" "$MFA_METHODS" "MFA 登录的审计事实记下了完整方法集合 [password, totp]"
+
 # 重放：同一个码不得再用一次（last_totp_step 水位线）
 req POST /api/auth/login -H 'Content-Type: application/json' \
     -d "{\"email\":\"${MFA_MAIL}\",\"password\":\"${MFA_PW}\"}" > /dev/null
@@ -2232,6 +2243,9 @@ WITHOUT_PROV="$(sql_count "SELECT count() FROM session WHERE user_id = ${GATE_AC
 [ "${WITH_PROV:-0}" -ge 1 ] && [ "${WITHOUT_PROV:-0}" -eq 0 ] \
     && ok "会话记下了认证来源与认证时刻（${WITH_PROV} 个会话，0 个缺字段）" \
     || bad "会话记下了认证来源与认证时刻" "带来源 ${WITH_PROV}，缺字段 ${WITHOUT_PROV}"
+# 口令登录建立的会话要指向那把口令凭证的稳定引用（credential:…），不是 label。
+eq "$WITH_PROV" "$(sql_count "SELECT count() FROM session WHERE user_id = ${GATE_ACTOR} AND credential_kind = 'password' AND string::starts_with(credential_ref, 'credential:') GROUP ALL")" \
+    "口令会话的 credential_ref 指向 credential 表的稳定记录"
 
 # ── 数据库级不变量：非法枚举值必须被拒 ───────────────────────────
 BAD_STATUS="$(sql "UPDATE ${GATE_ACTOR} SET status = 'not-a-status'" 2>&1)"
@@ -2446,7 +2460,12 @@ eq 1 "$(sql_count "SELECT count() FROM ai_actor_credential WHERE status = 'revok
 # `type::string()` 对需要转义的 key（UUID 这类带连字符的）会包一层反引号：
 # `actor_identity:\`550e…\``。老正则只认字母数字，于是对 UUID 型 id 一律取空 ——
 # 这正是这条断言曾经「某一轮静默没执行」的原因。这里把反引号一起吃掉再剥掉。
-HUMAN_ACTOR="$(sql "SELECT VALUE type::string(id) FROM actor_identity WHERE actor_kind = 'human' AND status = 'active' LIMIT 1" | python3 -c "
+#
+# 这里**不能**写 LIMIT 1：SurrealDB 3.0 的规划器会把 LIMIT 压进 actor_kind_idx 的
+# IndexScan 里、排在 `status = 'active'` 过滤之前 —— 只扫到一个人类，恰好是
+# 前面组里退休/停用的那个，过滤掉之后就是空。结果取决于 id 的排序，于是时有时无。
+# 全部取回再在这边挑第一个，规划器就没有可以下推的东西。
+HUMAN_ACTOR="$(sql "SELECT VALUE type::string(id) FROM actor_identity WHERE actor_kind = 'human' AND status = 'active'" | python3 -c "
 import json,sys
 try:
     v=json.load(sys.stdin)[0]
@@ -2528,7 +2547,7 @@ printf '\n%s\n' "─────────────────────
 #
 # 所以把它写下来。加断言时把这个数一起改大，这跟文档站那份读数是同一条纪律：
 # 数字要么是跑出来的，要么就不该出现。
-MIN_PASS=391
+MIN_PASS=393
 if [ "$PASS" -lt "$MIN_PASS" ]; then
     printf '%s  通过 %d 项，少于下界 %d —— 有断言被静默跳过了\n' \
         "$(c_red 覆盖不足)" "$PASS" "$MIN_PASS"

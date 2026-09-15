@@ -231,7 +231,7 @@ tested, and where it is still incomplete.
 
 ```text
 axum 0.6 · SurrealDB 3.0 · 72 paths / 85 operations · ~24k lines
-196 unit tests (no external dependencies) · 77 architecture invariants · 28 integration groups / 391 assertions
+199 unit tests (no external dependencies) · 77 architecture invariants · 28 integration groups / 393 assertions
 ```
 
 ---
@@ -428,8 +428,8 @@ surprises people during incident response.
 Two layers with different jobs. Neither substitutes for the other.
 
 ```bash
-cargo test              # 196 unit tests, no external dependencies
-cargo build && ./tests/integration.sh   # 28 groups, 391 assertions
+cargo test              # 199 unit tests, no external dependencies
+cargo build && ./tests/integration.sh   # 28 groups, 393 assertions
 ```
 
 **Unit tests** cover pure logic and consistency invariants — permission names
@@ -589,11 +589,21 @@ governance and public reality be organised into infrastructure that actually run
 Cite the tag and the commit together, not the repository URL on its own — `main` moves,
 and a citation that resolves to "whatever is current" cannot be checked later.
 
-> SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth
+Two different things get cited, and they are pinned to different releases:
 
-[CITATION.cff](CITATION.cff) carries the same metadata in machine-readable form; GitHub
-turns it into BibTeX through the *Cite this repository* button. Each release records the
-commit it was built from and the checksum of its archive.
+- **The software you are using.** Cite the release you actually run. The current one is
+  **v0.3.0**; [CITATION.cff](CITATION.cff) always describes the current release, and
+  GitHub turns it into BibTeX through the *Cite this repository* button.
+
+  > SoulAuth v0.3.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.3.0
+
+- **The evidence baseline of the SoulAuth paper (V1.0).** The paper's measurements and
+  claims were taken against **v0.1.0**, commit `aaad1abc52c8ab53c2a911f92e2698df95b0a17b`.
+  That reference is fixed: later releases do not change what the paper evaluated.
+
+  > SoulAuth v0.1.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.1.0
+
+Each release records the commit it was built from and the checksum of its archive.
 
 ---
 

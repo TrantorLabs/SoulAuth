@@ -51,10 +51,18 @@ impl CredentialService {
     /// 被吊销了、或者那一行的密材是空的，三种情况对调用方是同一件事。
     pub async fn active_password_hash(&self, actor: &Thing) -> Result<Option<String>> {
         Ok(self
+            .active_password(actor)
+            .await?
+            .and_then(|c| c.secret_hash))
+    }
+
+    /// 可用的口令凭证整行 —— 登录路径需要它的 record id 作为认证事实里的
+    /// 稳定凭证引用。
+    pub async fn active_password(&self, actor: &Thing) -> Result<Option<Credential>> {
+        Ok(self
             .find_password(actor)
             .await?
-            .filter(Credential::is_usable)
-            .and_then(|c| c.secret_hash))
+            .filter(Credential::is_usable))
     }
 
     /// 这个身份现在能不能用口令认证。

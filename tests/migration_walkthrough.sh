@@ -12,9 +12,13 @@
 #
 # SQL **直接从 CHANGELOG.md 里提取**，不另抄一份 —— 否则文档与脚本又会各说各话。
 #
-# 上一版的 schema 存在 `tests/fixtures/schema.previous.sql`，不从 git tag 读：
-# CI 的 checkout 是 fetch-depth 1，拿不到 tag；而且「上一版是什么形状」本身就该
-# 是仓库里一个可审的文件，而不是对 git 历史的一次解引用。发新版时更新它。
+# 起点的 schema 存在 `tests/fixtures/schema.previous.sql`（v0.1.0 的形状），不从
+# git tag 读：CI 的 checkout 是 fetch-depth 1，拿不到 tag；而且「起点是什么形状」
+# 本身就该是仓库里一个可审的文件，而不是对 git 历史的一次解引用。
+#
+# 从那个起点出发，按版本顺序把**每一个** release 的 Upgrade steps 走一遍，最后断言
+# 库等于当前 schema。发新版时不换起点，而是在末尾接上新版本那一节 —— 一个
+# 0.1.0 的库要能一路升到今天，中间任何一版的步骤失效都得在这里红。
 #
 # 用法：./tests/migration_walkthrough.sh      （需要 surreal 在 PATH）
 # 退出码：0 全过；1 有断言失败；2 前置条件不满足。
@@ -69,14 +73,17 @@ try:
 except Exception: print(-1)"
 }
 
-# 从 CHANGELOG 的「Upgrade steps」里提取第 N 步的 sql 代码块（按顺序取第 K 个）
-changelog_sql() {   # $1=步骤号 $2=该步骤内第几个 sql 块（从 1 起）
-    python3 - "$1" "$2" <<'PY'
+# 从 CHANGELOG 某个版本的「Upgrade steps」里提取第 N 步的 sql 代码块（按顺序取第 K 个）。
+# 版本要点名：每个 release 都有自己的 Upgrade steps，「取第一个」在下一次发版时就会
+# 悄悄指到别的版本去。
+changelog_sql() {   # $1=版本号 $2=步骤号 $3=该步骤内第几个 sql 块（从 1 起）
+    python3 - "$1" "$2" "$3" <<'PY'
 import re,sys
-step,k=sys.argv[1],int(sys.argv[2])
+ver,step,k=sys.argv[1],sys.argv[2],int(sys.argv[3])
 t=open('CHANGELOG.md',encoding='utf-8').read()
-# 只看第一个 Upgrade steps 节（Unreleased）
-sec=t.split('### Upgrade steps',1)[1].split('\n## ',1)[0]
+m=re.search(r'^## \['+re.escape(ver)+r'\].*?(?=^## |\Z)', t, re.S|re.M)
+if not m or '### Upgrade steps' not in m.group(0): sys.exit(1)
+sec=m.group(0).split('### Upgrade steps',1)[1]
 # 定位步骤：行首 "N. **"
 m=re.search(r'^'+re.escape(step)+r'\. \*\*.*?(?=^\d+\. \*\*|\Z)', sec, re.S|re.M)
 if not m: sys.exit(1)
@@ -119,24 +126,33 @@ eq 0 "$NEW_FAILS" "当前 schema 叠加到旧库上无误（IF NOT EXISTS 幂等
 
 echo "── 步骤 3：会员分布的替代查询 ──"
 # 端点删了，CHANGELOG 给运维的替代查询也要能跑 —— 否则那段建议与没有一样。
-S3="$(changelog_sql 3 1)" && sql_ok "步骤 3 的替代查询可执行" "$S3"
+S3="$(changelog_sql 0.2.0 3 1)" && sql_ok "步骤 3 的替代查询可执行" "$S3"
 
 echo "── 步骤 4：口令 → credential ──"
-S4="$(changelog_sql 4 1)" || { bad "从 CHANGELOG 提取步骤 4 的 SQL" "没找到"; }
+S4="$(changelog_sql 0.2.0 4 1)" || { bad "从 CHANGELOG 提取步骤 4 的 SQL" "没找到"; }
 [ -n "${S4:-}" ] && sql_ok "步骤 4 的 SQL 可执行（逐字取自 CHANGELOG）" "$S4"
 eq "$(count "SELECT count() FROM user WHERE password != NONE GROUP ALL")" \
    "$(count "SELECT count() FROM credential WHERE kind = 'password' GROUP ALL")" \
    "步骤 4 的计数核对：有口令的用户数 = 凭证行数"
 eq 2 "$(count "SELECT count() FROM credential WHERE kind = 'password' AND status = 'active' GROUP ALL")" "两把口令凭证都是 active"
-S4B="$(changelog_sql 4 3)" && sql_ok "步骤 4 收尾：REMOVE FIELD password" "$S4B"
+S4B="$(changelog_sql 0.2.0 4 3)" && sql_ok "步骤 4 收尾：REMOVE FIELD password" "$S4B"
 
-echo "── 步骤 5：user_activity.user_id → actor_identity_id ──"
-S5="$(changelog_sql 5 1)" && sql_ok "步骤 5 的 SQL 可执行" "$S5"
+echo "── 步骤 5：完整性边界（先），然后 user_activity.user_id → actor_identity_id ──"
+# 顺序是这一步的要害：REMOVE FIELD 之后表是 SCHEMAFULL，而行里还带着旧键，任何
+# 再碰那些行的 UPDATE 都会被拒。边界 UPDATE 必须在改名之前 —— 演练第一次跑时
+# 就是反过来写的，红了。
+ROWS_BEFORE="$(count "SELECT count() FROM user_activity GROUP ALL")"
+S5A="$(changelog_sql 0.2.0 5 1)" && sql_ok "步骤 5 的完整性边界 SQL 可执行" "$S5A"
+eq "$ROWS_BEFORE" "$(count "SELECT count() FROM user_activity GROUP ALL")" "边界迁移不删任何历史事件"
+eq 0 "$(count "SELECT count() FROM user_activity WHERE chain_id != NONE GROUP ALL")" "历史行已移出旧链（chain_id = NONE）"
+eq "$ROWS_BEFORE" "$(count "SELECT count() FROM user_activity WHERE details.integrity_boundary = 'pre-0.2.0' GROUP ALL")" "每一条历史行都标了 integrity_boundary"
+
+S5B="$(changelog_sql 0.2.0 5 2)" && sql_ok "步骤 5 的改名 SQL 可执行" "$S5B"
 eq 1 "$(count "SELECT count() FROM user_activity WHERE actor_identity_id != NONE GROUP ALL")" "有归因的审计行迁过来了"
 eq 1 "$(count "SELECT count() FROM user_activity WHERE actor_identity_id = NONE GROUP ALL")" "无归因的审计行保持 NONE"
 
 echo "── 步骤 6：old_sub → new_sub 导出 ──"
-S6="$(changelog_sql 6 1)" && sql_ok "步骤 6 的导出查询可执行" "$S6"
+S6="$(changelog_sql 0.2.0 6 1)" && sql_ok "步骤 6 的导出查询可执行" "$S6"
 MAPPED="$(sql "$S6" | python3 -c "
 import json,sys
 r=json.load(sys.stdin)[0]['result']
@@ -144,7 +160,7 @@ print(len([x for x in r if x.get('new_sub')]))")"
 eq 3 "$MAPPED" "三个账号都导出了 old_sub → new_sub"
 
 echo "── 步骤 7：identity_provider → identity_binding ──"
-S7="$(changelog_sql 7 1)" && sql_ok "步骤 7 的 SQL 可执行" "$S7"
+S7="$(changelog_sql 0.2.0 7 1)" && sql_ok "步骤 7 的 SQL 可执行" "$S7"
 eq 1 "$(count "SELECT count() FROM identity_binding WHERE provider = 'google' AND provider_subject = 'g-3' AND verification_state = 'verified' GROUP ALL")" \
    "identity_provider 那一行变成了 verified 的 identity_binding"
 TABLE_GONE="$(sql "SELECT count() FROM identity_provider GROUP ALL" | python3 -c "
@@ -155,18 +171,76 @@ eq gone "$TABLE_GONE" "identity_provider 表已删除"
 echo "── 步骤 8：预检越界值，然后用 OVERWRITE 套上 ASSERT ──"
 # `DEFINE FIELD IF NOT EXISTS` 对已存在的列不更新定义 —— 所以重导 schema 之后
 # ASSERT 根本没生效。这就是这个脚本第一次跑时最后一条断言红掉的原因。
-S8CHECK="$(changelog_sql 8 2)" && sql_ok "步骤 8 的预检查询可执行" "$S8CHECK"
+S8CHECK="$(changelog_sql 0.2.0 8 2)" && sql_ok "步骤 8 的预检查询可执行" "$S8CHECK"
 eq 0 "$(sql "$S8CHECK" | python3 -c "import json,sys;print(len(json.load(sys.stdin)[0]['result']))")" "没有越界的枚举值"
-S8="$(changelog_sql 8 1)" && sql_ok "步骤 8 的 OVERWRITE 重定义可执行" "$S8"
+S8="$(changelog_sql 0.2.0 8 1)" && sql_ok "步骤 8 的 OVERWRITE 重定义可执行" "$S8"
 
 echo "── 步骤 10：user_profile.user_id → actor_identity_id ──"
-S10="$(changelog_sql 10 1)" && sql_ok "步骤 10 的 SQL 可执行" "$S10"
+S10="$(changelog_sql 0.2.0 10 1)" && sql_ok "步骤 10 的 SQL 可执行" "$S10"
 eq 1 "$(count "SELECT count() FROM user_profile WHERE actor_identity_id != NONE GROUP ALL")" "profile 的引用迁过来了"
+
+echo "── 步骤 5 / 10 的收尾：重新导入当前 schema，让索引在新列上重建 ──"
+# 前面的 REMOVE INDEX 把旧索引删了；CHANGELOG 要求之后再导一次 schema.sql 重建。
+# 演练以前到 REMOVE INDEX 就停了 —— 于是「迁移 SQL 都返回 OK」与「最终库等于
+# v0.2.0 目标 schema」是两回事，测试证明的是前者。
+FINAL_FAILS="$(curl -sS -u root:root -H 'Accept: application/json' -H 'surreal-ns: auth' -H 'surreal-db: main' \
+    --data-binary @schema.sql "${DB}/sql" | python3 -c "
+import json,sys
+d=json.load(sys.stdin); print(len([x for x in d if x.get('status')!='OK']))")"
+eq 0 "$FINAL_FAILS" "迁移完成后再导一次当前 schema，无误"
+
+index_def() {   # $1=表 $2=索引名 → 打印定义
+    sql "INFO FOR TABLE $1;" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)[0]['result'].get('indexes',{}).get('$2',''))
+except Exception: print('')"
+}
+UA_IDX="$(index_def user_activity user_activity_user_idx)"
+case "$UA_IDX" in
+    *"FIELDS actor_identity_id"*) ok "user_activity_user_idx 重建在 actor_identity_id 上" ;;
+    *) bad "user_activity_user_idx 重建在 actor_identity_id 上" "实际: ${UA_IDX:-（不存在）}" ;;
+esac
+UP_IDX="$(index_def user_profile user_profile_user_idx)"
+case "$UP_IDX" in
+    *"FIELDS actor_identity_id UNIQUE"*) ok "user_profile_user_idx 重建在 actor_identity_id 上且 UNIQUE" ;;
+    *) bad "user_profile_user_idx 重建在 actor_identity_id 上且 UNIQUE" "实际: ${UP_IDX:-（不存在）}" ;;
+esac
+
+# 定义写着 UNIQUE 不等于它在管事：真插一条重复的。
+DUP="$(sql "CREATE user_profile CONTENT { actor_identity_id: actor_identity:a1, created_at: 2, updated_at: 2 }" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)[0].get('status'))
+except Exception: print('ERR')")"
+eq ERR "$DUP" "同一身份根的第二条 profile 被 UNIQUE 索引拒绝（约束真实生效）"
 
 echo "── 迁完之后：新 schema 的约束真的在管事 ──"
 BAD="$(sql "UPDATE actor_identity:a1 SET status = 'bogus'" | python3 -c "
 import json,sys;d=json.load(sys.stdin)[0];print('rejected' if d.get('status')!='OK' else 'accepted')")"
 eq rejected "$BAD" "迁移后的库拒绝非法的 actor status（ASSERT 生效）"
+
+echo "── 0.3.0 步骤 1：重新导入 schema 之后，session.credential_ref 已存在 ──"
+# 上面那次导入就是 0.3.0 的第 1 步；这里确认它真的带来了新列。
+SESSION_FIELDS="$(sql "INFO FOR TABLE session;" | python3 -c "
+import json,sys
+try: print(' '.join(sorted(json.load(sys.stdin)[0]['result'].get('fields',{}).keys())))
+except Exception: print('')")"
+case " $SESSION_FIELDS " in
+    *" credential_ref "*) ok "session 表有 credential_ref 列" ;;
+    *) bad "session 表有 credential_ref 列" "实际字段: ${SESSION_FIELDS:-（读不到）}" ;;
+esac
+
+echo "── 0.3.0 步骤 2：结束升级前建立的 AI actor 会话，人类会话不动 ──"
+# 造 0.2.0 形状的会话：AI actor 的只有 credential_label、没有 credential_ref；
+# 人类的没有 label；再加一条已经带 credential_ref 的（升级后新建的形状），它必须留下。
+sql_ok "写入 0.2.0 形状的会话" "
+CREATE actor_identity:ai1 CONTENT { subject_key:'sk-ai1', actor_kind:'ai_actor', identity_source:'local', status:'active', created_at:1, updated_at:1 };
+CREATE session:s_ai_old CONTENT { user_id: actor_identity:ai1, token_hash:'t1', expires_at: 9999999999, created_at:1, user_agent:'u', ip_address:'1', credential_kind:'ed25519_key', credential_label:'deploy-key', authenticated_at:1 };
+CREATE session:s_ai_new CONTENT { user_id: actor_identity:ai1, token_hash:'t2', expires_at: 9999999999, created_at:2, user_agent:'u', ip_address:'1', credential_kind:'ed25519_key', credential_ref:'ai_actor_credential:k1', credential_label:'deploy-key', authenticated_at:2 };
+CREATE session:s_human CONTENT { user_id: actor_identity:a1, token_hash:'t3', expires_at: 9999999999, created_at:1, user_agent:'u', ip_address:'1', credential_kind:'password', authenticated_at:1 };"
+S2="$(changelog_sql 0.3.0 2 1)" && sql_ok "0.3.0 步骤 2 的 SQL 可执行" "$S2"
+eq 0 "$(count "SELECT count() FROM session WHERE id = session:s_ai_old GROUP ALL")" "升级前的 AI actor 会话已结束"
+eq 1 "$(count "SELECT count() FROM session WHERE id = session:s_ai_new GROUP ALL")" "已绑定 credential_ref 的 AI actor 会话保留"
+eq 1 "$(count "SELECT count() FROM session WHERE id = session:s_human GROUP ALL")" "人类会话不受影响"
 
 printf '\n────────────────────────────────\n'
 if [ "$FAIL" -eq 0 ]; then
