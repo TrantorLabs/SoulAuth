@@ -144,7 +144,18 @@ echo "── 步骤 5：完整性边界（先），然后 user_activity.user_id 
 ROWS_BEFORE="$(count "SELECT count() FROM user_activity GROUP ALL")"
 S5A="$(changelog_sql 0.2.0 5 1)" && sql_ok "步骤 5 的完整性边界 SQL 可执行" "$S5A"
 eq "$ROWS_BEFORE" "$(count "SELECT count() FROM user_activity GROUP ALL")" "边界迁移不删任何历史事件"
-eq 0 "$(count "SELECT count() FROM user_activity WHERE chain_id != NONE GROUP ALL")" "历史行已移出旧链（chain_id = NONE）"
+# 这条不用 `count() … WHERE chain_id != NONE / = NONE`：两代 SurrealDB 各把一种形状
+# 规划错了 —— 3.2.4 把 `!= NONE` 走成 (chain_id, seq) 索引上的 IndexCountScan 并丢掉
+# 条件（数出全表），3.0.0 对 `= NONE` 走索引查不到已删除的键（数出 0）。
+# 上面那条 UPDATE 的 WHERE 不受影响（实测两代都只改带 chain_id 的行）。
+# 把行取回来，在这边逐行看三个链字段是不是都没了，不给规划器任何余地。
+UNCHAINED="$(sql "SELECT chain_id, seq, event_hash FROM user_activity" | python3 -c "
+import json,sys
+try:
+    rows=json.load(sys.stdin)[0]['result']
+    print(sum(1 for r in rows if r.get('chain_id') is None and r.get('seq') is None and r.get('event_hash') is None))
+except Exception: print(-1)")"
+eq "$ROWS_BEFORE" "$UNCHAINED" "历史行已移出旧链（chain_id / seq / event_hash 都清空）"
 eq "$ROWS_BEFORE" "$(count "SELECT count() FROM user_activity WHERE details.integrity_boundary = 'pre-0.2.0' GROUP ALL")" "每一条历史行都标了 integrity_boundary"
 
 S5B="$(changelog_sql 0.2.0 5 2)" && sql_ok "步骤 5 的改名 SQL 可执行" "$S5B"
