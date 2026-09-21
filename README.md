@@ -230,8 +230,8 @@ Everything from here on is operational: how to run it, what it exposes, how it i
 tested, and where it is still incomplete.
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 72 paths / 85 operations · ~24k lines
-199 unit tests (no external dependencies) · 77 architecture invariants · 28 integration groups / 393 assertions
+axum 0.6 · SurrealDB 3.0 · 73 paths / 86 operations · ~24k lines
+200 unit tests (no external dependencies) · 77 architecture invariants · 28 integration groups / 404 assertions
 ```
 
 ---
@@ -323,13 +323,13 @@ OIDC client library.
 
 ## API surface
 
-85 operations over 72 paths. `contracts/openapi.yaml` is the authoritative list and
+86 operations over 73 paths. `contracts/openapi.yaml` is the authoritative list and
 `tests/conformance.rs::j4` holds it against the route table in both directions; this is
 the shape of it.
 
 | Prefix | Operations | Covers |
 |---|---:|---|
-| `/api/auth` | 21 | register, login, admin login, logout, logout-all, sessions, email verification and resend, password reset, first-password initialisation, MFA (5), OAuth entry and callback for two providers |
+| `/api/auth` | 22 | register, login, admin login, logout, logout-all, sessions, introspection of the presented token, email verification and resend, password reset, first-password initialisation, MFA (5), OAuth entry and callback for two providers |
 | `/api/rbac` | 17 | role and permission CRUD, assignment in both directions, self permission checks |
 | `/api/oidc` | 12 | discovery, JWKS, authorize, token, userinfo, logout, plus the client management API |
 | `/api/actors` | 10 | AI actor registration, credential add and revoke, challenge, authenticate, self-introspection, suspend / retire |
@@ -428,8 +428,8 @@ surprises people during incident response.
 Two layers with different jobs. Neither substitutes for the other.
 
 ```bash
-cargo test              # 199 unit tests, no external dependencies
-cargo build && ./tests/integration.sh   # 28 groups, 393 assertions
+cargo test              # 200 unit tests, no external dependencies
+cargo build && ./tests/integration.sh   # 28 groups, 404 assertions
 ```
 
 **Unit tests** cover pure logic and consistency invariants — permission names

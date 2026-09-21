@@ -266,6 +266,10 @@ DEFINE FIELD IF NOT EXISTS credential_kind ON session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS credential_ref ON session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS credential_label ON session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS authenticated_at ON session TYPE option<number>;
+-- 认证事实的完整方法集合与凭证引用列表。`credential_kind` / `credential_ref`
+-- 只记首项，是投影；`/api/auth/introspect` 交给依赖方的是这两列。
+DEFINE FIELD IF NOT EXISTS methods ON session TYPE option<array<string>>;
+DEFINE FIELD IF NOT EXISTS credential_refs ON session TYPE option<array<string>>;
 DEFINE INDEX IF NOT EXISTS session_token_hash_idx ON session COLUMNS token_hash UNIQUE;
 
 -- 密码重置令牌表

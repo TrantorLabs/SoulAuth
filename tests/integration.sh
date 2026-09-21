@@ -889,6 +889,19 @@ try: print(','.join(json.load(sys.stdin)[0]['methods']))
 except Exception: print('')")"
 eq "password,totp" "$MFA_METHODS" "MFA 登录的审计事实记下了完整方法集合 [password, totp]"
 
+# 自省端点交给依赖方的必须是同一份事实：方法集合完整、凭证引用是稳定 id、令牌不回传。
+MFA_SESSION_TOK="$(jget token)"
+eq 200 "$(req GET /api/auth/introspect -H "Authorization: Bearer ${MFA_SESSION_TOK}")" \
+    "人类会话可以自省 /api/auth/introspect"
+eq "password,totp" "$(python3 -c "import json;d=json.load(open('$WORK/body'));print(','.join(d['authentication']['methods']))" 2>/dev/null)" \
+    "自省返回的方法集合是 [password, totp]，与审计一致"
+eq "human" "$(python3 -c "import json;print(json.load(open('$WORK/body'))['authentication']['actor_kind'])" 2>/dev/null)" \
+    "自省返回 actor_kind = human"
+INTRO_REF="$(python3 -c "import json;print(json.load(open('$WORK/body'))['authentication']['credential_refs'][0])" 2>/dev/null)"
+case "$INTRO_REF" in credential:*) ok "自省返回的凭证引用是稳定 id（credential:…）" ;; *) bad "自省返回的凭证引用是稳定 id（credential:…）" "实际: ${INTRO_REF:-（空）}" ;; esac
+! grep -q "$MFA_SESSION_TOK" "$WORK/body" && ok "自省响应不回传令牌本身" || bad "自省响应不回传令牌本身"
+eq 401 "$(req GET /api/auth/introspect)" "没有令牌不能自省"
+
 # 重放：同一个码不得再用一次（last_totp_step 水位线）
 req POST /api/auth/login -H 'Content-Type: application/json' \
     -d "{\"email\":\"${MFA_MAIL}\",\"password\":\"${MFA_PW}\"}" > /dev/null
@@ -2422,6 +2435,18 @@ eq 401 "$(req POST /api/actors/authenticate -H 'Content-Type: application/json' 
 eq 200 "$(req GET /api/actors/me -H "Authorization: Bearer ${AGENT_TOK}")" \
     "Agent 可以自省 /api/actors/me"
 
+# 同一枚 Agent 令牌在 /api/auth/introspect 拿到的是认证事实：ed25519_key + 建立会话的那把钥匙。
+eq 200 "$(req GET /api/auth/introspect -H "Authorization: Bearer ${AGENT_TOK}")" \
+    "Agent 令牌可以自省 /api/auth/introspect"
+eq "ai_actor" "$(python3 -c "import json;print(json.load(open('$WORK/body'))['authentication']['actor_kind'])" 2>/dev/null)" \
+    "自省返回 actor_kind = ai_actor"
+eq "ed25519_key" "$(python3 -c "import json;print(','.join(json.load(open('$WORK/body'))['authentication']['methods']))" 2>/dev/null)" \
+    "自省返回的方法集合是 [ed25519_key]"
+AGENT_INTRO_REF="$(python3 -c "import json;print(json.load(open('$WORK/body'))['authentication']['credential_refs'][0])" 2>/dev/null)"
+case "$AGENT_INTRO_REF" in ai_actor_credential:*) ok "自省返回建立会话的那把钥匙的稳定引用" ;; *) bad "自省返回建立会话的那把钥匙的稳定引用" "实际: ${AGENT_INTRO_REF:-（空）}" ;; esac
+eq "$AGENT_ID" "$(python3 -c "import json;print(json.load(open('$WORK/body'))['authentication']['actor_identity_id'])" 2>/dev/null)" \
+    "自省返回的主体就是认证的那个 actor_identity"
+
 # 整组里最要紧的一条：Agent 令牌不得在人类端点上通过。
 eq 403 "$(req GET /api/auth/me -H "Authorization: Bearer ${AGENT_TOK}")" \
     "Agent 令牌在人类端点上被明确拒绝"
@@ -2547,7 +2572,7 @@ printf '\n%s\n' "─────────────────────
 #
 # 所以把它写下来。加断言时把这个数一起改大，这跟文档站那份读数是同一条纪律：
 # 数字要么是跑出来的，要么就不该出现。
-MIN_PASS=393
+MIN_PASS=404
 if [ "$PASS" -lt "$MIN_PASS" ]; then
     printf '%s  通过 %d 项，少于下界 %d —— 有断言被静默跳过了\n' \
         "$(c_red 覆盖不足)" "$PASS" "$MIN_PASS"

@@ -205,8 +205,8 @@ Detection、Key Lifecycle 与 Tamper-evident Audit 建立持续保护。
 以下全部是操作性的内容：怎么跑起来、对外暴露什么、怎么测的，以及哪些地方还不完整。
 
 ```text
-axum 0.6 · SurrealDB 3.0 · 72 条路径 / 85 个 operation · 约 2.4 万行
-单元测试 199 项（零外部依赖）· 架构不变式 77 条 · 集成测试 28 组 393 项断言
+axum 0.6 · SurrealDB 3.0 · 73 条路径 / 86 个 operation · 约 2.4 万行
+单元测试 200 项（零外部依赖）· 架构不变式 77 条 · 集成测试 28 组 404 项断言
 ```
 
 ---
@@ -294,12 +294,12 @@ OIDC 那几个端点（`/.well-known/openid-configuration`、`/jwks`、`/token`�
 
 ## 接口面
 
-72 条路径、85 个 operation。`contracts/openapi.yaml` 是权威清单，
+73 条路径、86 个 operation。`contracts/openapi.yaml` 是权威清单，
 `tests/conformance.rs::j4` 拿它与路由表双向对账；这里给的是它的形状。
 
 | 前缀 | operation | 覆盖 |
 |---|---:|---|
-| `/api/auth` | 21 | 注册、登录、管理后台登录、登出、全端登出、会话列表、邮箱验证与重发、密码重置、首次设密、MFA（5 个）、两个 provider 的 OAuth 入口与回调 |
+| `/api/auth` | 22 | 注册、登录、管理后台登录、登出、全端登出、会话列表、所出示令牌的自省、邮箱验证与重发、密码重置、首次设密、MFA（5 个）、两个 provider 的 OAuth 入口与回调 |
 | `/api/rbac` | 17 | 角色与权限的增删查、双向授予、自身权限自查 |
 | `/api/oidc` | 12 | 发现文档、JWKS、authorize、token、userinfo、logout，以及客户端管理 API |
 | `/api/actors` | 10 | AI 主体注册、加密钥、吊销密钥、领挑战、认证、自省、停用 / 退役 |
@@ -390,8 +390,8 @@ curl -X POST localhost:8080/api/auth/logout -H "Authorization: Bearer $TOKEN"
 两层，分工不同，谁也替代不了谁。
 
 ```bash
-cargo test              # 单元测试 199 项，零外部依赖
-cargo build && ./tests/integration.sh   # 28 组 393 项断言
+cargo test              # 单元测试 200 项，零外部依赖
+cargo build && ./tests/integration.sh   # 28 组 404 项断言
 ```
 
 **单元测试**管纯逻辑与一致性不变量：权限名与种子数据是否对得上、端点路径

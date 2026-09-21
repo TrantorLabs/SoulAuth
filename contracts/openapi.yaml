@@ -345,6 +345,28 @@ components:
       - failure_analysis
       - geographic_distribution
       type: object
+    AuthenticationFactView:
+      properties:
+        actor_identity_id:
+          type: string
+        actor_kind:
+          type: string
+        authenticated_at:
+          type: integer
+        credential_refs:
+          items:
+            type: string
+          type: array
+        methods:
+          items:
+            type: string
+          type: array
+      required:
+      - actor_identity_id
+      - actor_kind
+      - methods
+      - credential_refs
+      type: object
     AuthenticationStats:
       properties:
         failed_logins:
@@ -664,6 +686,16 @@ components:
           type: string
       required:
       - password
+      type: object
+    IntrospectionResponse:
+      properties:
+        authentication:
+          $ref: '#/components/schemas/AuthenticationFactView'
+        session:
+          $ref: '#/components/schemas/SessionView'
+      required:
+      - authentication
+      - session
       type: object
     IpActivityMetric:
       properties:
@@ -1345,6 +1377,19 @@ components:
       - user_agent
       - ip_address
       - is_current
+      type: object
+    SessionView:
+      properties:
+        created_at:
+          type: integer
+        expires_at:
+          type: integer
+        id:
+          type: string
+      required:
+      - id
+      - created_at
+      - expires_at
       type: object
     StatusMetric:
       properties:
@@ -2476,6 +2521,37 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/InitializePasswordRequest'
+  /api/auth/introspect:
+    get:
+      tags:
+      - Authentication
+      operationId: auth_introspect
+      description: >-
+        The authentication fact behind the presented session token: which actor, of which
+        kind, authenticated by which methods (an MFA login is `["password", "totp"]`), when,
+        and through which local credentials — plus the session's id and expiry. Human and AI
+        actor tokens are both accepted, each through its own authentication gate. This is the
+        bearer describing itself, not RFC 7662 introspection of arbitrary tokens; the token
+        is never returned. Relying parties that need the fact rather than the token (for
+        example a governance layer that keys authority on the actor) read it here; the same
+        fields are what the `login_success` audit event records.
+      description_zh: >-
+        所出示会话令牌背后的认证事实：哪个主体、什么类型、用哪些方法（MFA 登录是 `["password", "totp"]`）、何时、经由哪些本地凭证，外加该会话的 id 与过期时刻。人类令牌与 AIActor 令牌都接受，各走各的认证闸门。这是持有者对自己的自省，不是 RFC 7662 那种代查任意令牌的 introspection；令牌本身永不返回。需要「事实」而不是「令牌」的依赖方（例如按主体挂授权的治理层）从这里读，字段与 `login_success` 审计事件记录的一致。
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntrospectionResponse'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/auth/login:
     post:
       tags:

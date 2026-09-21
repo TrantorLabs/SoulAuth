@@ -29,6 +29,27 @@ translated copy drifts within weeks.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /api/auth/introspect` — the authentication fact behind the presented token.**
+  Which actor, of which kind, authenticated by which methods (an MFA login is
+  `["password", "totp"]`), when, and through which local credentials, plus the session's
+  id and expiry. Human and AI-actor tokens are both accepted, each through its own
+  authentication gate; the token itself is never returned. Until now the fact existed only
+  inside the service and in the `login_success` audit event, so a relying party that keys
+  authority on the actor rather than on the token — a governance layer, for instance — had
+  no sanctioned way to read it. The fields are the same ones the audit event records.
+- **Sessions store the full authentication fact.** `session.methods` and
+  `session.credential_refs` are new; `credential_kind` and `credential_ref` remain as the
+  first-element projections that revocation and `auth_time` read. Sessions established
+  before this release have neither column and are introspected as the single method and
+  credential they recorded.
+
+### Upgrade steps
+
+1. **Re-import `schema.sql`.** `session` gains two optional columns; the import is
+   idempotent and changes nothing else. No token stops working.
+
 ## [0.3.0] - 2026-09-15
 
 The release that closes the structural audit of 0.2.0. Authentication is now recorded as
