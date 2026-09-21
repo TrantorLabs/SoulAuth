@@ -592,10 +592,10 @@ and a citation that resolves to "whatever is current" cannot be checked later.
 Two different things get cited, and they are pinned to different releases:
 
 - **The software you are using.** Cite the release you actually run. The current one is
-  **v0.3.0**; [CITATION.cff](CITATION.cff) always describes the current release, and
+  **v0.4.0**; [CITATION.cff](CITATION.cff) always describes the current release, and
   GitHub turns it into BibTeX through the *Cite this repository* button.
 
-  > SoulAuth v0.3.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.3.0
+  > SoulAuth v0.4.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.4.0
 
 - **The evidence baseline of the SoulAuth paper (V1.0).** The paper's measurements and
   claims were taken against **v0.1.0**, commit `aaad1abc52c8ab53c2a911f92e2698df95b0a17b`.

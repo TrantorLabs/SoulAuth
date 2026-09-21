@@ -29,6 +29,12 @@ translated copy drifts within weeks.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
+The release in which the authentication fact leaves the service: a relying party that
+keys authority on the actor rather than on the token can now read who was authenticated,
+by which methods, when and through which credentials — the same object the audit records.
+
 ### Added
 
 - **`GET /api/auth/introspect` — the authentication fact behind the presented token.**
