@@ -534,11 +534,11 @@ SoulAuth 由 **TRANTOR LABS｜Singapore** 构建。TRANTOR LABS 关注的不是�
 
 要引用的是两件不同的东西，钉在不同的版本上：
 
-- **你实际使用的软件。** 引用你真正跑的那个 release。当前是 **v0.3.0**；
+- **你实际使用的软件。** 引用你真正跑的那个 release。当前是 **v0.4.0**；
   [CITATION.cff](CITATION.cff) 始终描述当前 release，GitHub 会通过 *Cite this
   repository* 按钮把它转成 BibTeX。
 
-  > SoulAuth v0.3.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.3.0
+  > SoulAuth v0.4.0, TRANTOR LABS, 2026. https://github.com/TrantorLabs/SoulAuth/tree/v0.4.0
 
 - **SoulAuth 论文（V1.0）的证据基线。** 论文的测量与主张针对的是 **v0.1.0**，commit
   `aaad1abc52c8ab53c2a911f92e2698df95b0a17b`。这个引用是固定的：之后的 release 不改变
