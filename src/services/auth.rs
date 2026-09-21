@@ -756,6 +756,8 @@ impl AuthService {
             credential_ref: credential_refs.first().cloned(),
             credential_label: None,
             authenticated_at: Some(now.timestamp()),
+            methods: Some(methods.iter().map(|m| m.as_str().to_string()).collect()),
+            credential_refs: Some(credential_refs.clone()),
         };
 
         self.db.create_record("session", &session).await?;

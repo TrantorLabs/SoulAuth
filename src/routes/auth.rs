@@ -45,7 +45,7 @@ use crate::{
         rbac::RBACService,
     },
     utils::{
-        jwt::{decode_mfa_challenge_token, AuthedUser},
+        jwt::{decode_mfa_challenge_token, AuthedSession, AuthedUser},
         rate_limit_middleware::client_ip,
     },
     AppState,
@@ -224,6 +224,7 @@ pub fn router() -> Router {
         .route("/verify-email/:token", get(verify_email))
         .route("/resend-verification", post(resend_verification))
         .route("/me", get(get_current_user))
+        .route("/introspect", get(introspect))
         .route("/initialize-password", post(initialize_password))
         .route("/request-password-reset", post(request_password_reset))
         .route("/reset-password", post(reset_password))
@@ -593,6 +594,77 @@ async fn get_current_user(
     response.is_admin = fill_is_admin(&db, &user_id).await;
 
     Ok(Json(response))
+}
+
+/// `/api/auth/introspect` 的响应：出示令牌的那个会话所建立的**认证事实**，
+/// 以及该会话的投影。
+///
+/// 事实部分与 `login_success` 审计事件的 `details` 是同一形状、同一键名
+/// （`authentication_details` 写审计，这里交给依赖方）——这样依赖方拿到的
+/// 与审计里记的是同一个对象，不是两套各自演进的描述。
+#[derive(Debug, Serialize)]
+pub struct IntrospectionResponse {
+    pub authentication: AuthenticationFactView,
+    pub session: SessionView,
+}
+
+/// 认证事实的对外形状。方法与凭证引用取自会话行；令牌不在其中 —— 事实不拥有令牌。
+#[derive(Debug, Serialize)]
+pub struct AuthenticationFactView {
+    /// `actor_identity:xxx`。
+    pub actor_identity_id: String,
+    /// `human` | `ai_actor`。
+    pub actor_kind: String,
+    /// 认证时成立的全部方法，按顺序；MFA 登录是 `["password", "totp"]`。
+    pub methods: Vec<String>,
+    /// 这次认证发生的时刻（Unix 秒）。
+    pub authenticated_at: Option<i64>,
+    /// 支撑认证的本地凭证的稳定引用；外部联合与邮件链接为空数组。
+    pub credential_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionView {
+    pub id: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+/// 自省：这枚令牌是谁、怎样认证的。人类会话与 AIActor 会话都能问，各走各的闸门。
+///
+/// 这是**持有者对自己**的自省，不是 RFC 7662 那种由资源服务器代查任意令牌的
+/// introspection：只描述随请求出示的那一枚，且不返回令牌本身。
+async fn introspect(session: AuthedSession) -> Result<Json<IntrospectionResponse>> {
+    let AuthedSession { actor, session } = session;
+    let actor_identity_id = actor
+        .id
+        .as_ref()
+        .map(|t| {
+            format!(
+                "actor_identity:{}",
+                crate::utils::record_id::record_id_key_to_string(t)
+            )
+        })
+        .ok_or_else(|| AuthError::DatabaseError("actor_identity 没有 id".into()))?;
+    let session_id = session
+        .id
+        .as_ref()
+        .map(crate::utils::record_id::record_id_key_to_string)
+        .ok_or_else(|| AuthError::DatabaseError("session 没有 id".into()))?;
+    Ok(Json(IntrospectionResponse {
+        authentication: AuthenticationFactView {
+            actor_identity_id,
+            actor_kind: actor.actor_kind,
+            methods: session.method_names(),
+            authenticated_at: session.authenticated_at,
+            credential_refs: session.credential_ref_list(),
+        },
+        session: SessionView {
+            id: session_id,
+            created_at: session.created_at,
+            expires_at: session.expires_at,
+        },
+    }))
 }
 
 /// 查一次 RBAC，回答「这个账号是不是管理员」。
@@ -1212,6 +1284,32 @@ mod tests {
             HeaderValue::from_str(&format!("{OAUTH_STATE_COOKIE}={nonce}")).unwrap(),
         );
         headers
+    }
+
+    /// 依赖方从 `/api/auth/introspect` 拿到的事实，键名必须与审计里记的一致：
+    /// 审计 `details` 的每一个键都在自省响应里，且是同一个值。
+    #[test]
+    fn introspection_view_carries_every_audit_detail_key() {
+        use crate::models::authentication::{AuthenticationFact, AuthenticationMethod};
+        let fact = AuthenticationFact::human(
+            "actor_identity:a1".into(),
+            vec![AuthenticationMethod::Password, AuthenticationMethod::Totp],
+            vec!["credential:c1".into()],
+            1_700_000_000,
+        );
+        let audit = super::authentication_details(&fact);
+        let view = serde_json::to_value(super::AuthenticationFactView {
+            actor_identity_id: fact.actor_identity_id.clone(),
+            actor_kind: fact.actor_kind.as_str().to_string(),
+            methods: fact.method_names().into_iter().map(String::from).collect(),
+            authenticated_at: Some(fact.authenticated_at),
+            credential_refs: fact.credential_refs.clone(),
+        })
+        .unwrap();
+        for (key, value) in audit.as_object().unwrap() {
+            assert_eq!(view.get(key), Some(value), "key {key}");
+        }
+        assert_eq!(view["actor_identity_id"], "actor_identity:a1");
     }
 
     #[test]

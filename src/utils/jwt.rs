@@ -3,7 +3,12 @@ use surrealdb::types::RecordId as Thing;
 
 use crate::{
     error::{AuthError, Result},
-    models::{actor_identity::ActorIdentity, subject::SubjectType, user::User},
+    models::{
+        actor_identity::{ActorIdentity, ActorKind},
+        session::Session,
+        subject::SubjectType,
+        user::User,
+    },
     services::{auth_cache::AuthCache, database::Database},
 };
 use axum::{
@@ -346,6 +351,61 @@ where
         }
 
         Ok(AuthedActor(actor))
+    }
+}
+
+/// 出示令牌的那个会话本身 —— 不分主体类型。
+///
+/// [`AuthedUser`] 与 [`AuthedActor`] 各只认一种主体，因为业务端点必须在签名上
+/// 说明「给谁用」。这个提取器只服务于**描述持有者自己**的端点（自省）：
+/// 人类会话与 AIActor 会话都能通过，但各自仍走同一道闸门 —— 人类经
+/// `authenticable_actor(Human)` 连账户扩展一起校验，AIActor 经
+/// `authenticable_actor(AiActor)`。会话行按令牌指纹取回：认证事实
+/// （方法集合、凭证引用、认证时刻）就在那一行上，令牌本身不携带。
+pub struct AuthedSession {
+    pub actor: ActorIdentity,
+    pub session: Session,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AuthedSession
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+        let token = bearer_token(parts).ok_or(AuthError::InvalidToken)?;
+        let claims = Claims::from_request_parts(parts, state).await?;
+        let db = db_from_parts(parts)?;
+
+        let kind = if matches!(claims.subject_type, Some(SubjectType::Agent)) {
+            ActorKind::AiActor
+        } else {
+            ActorKind::Human
+        };
+        let gate = crate::services::identity::IdentityService::new(db.clone())
+            .authenticable_actor(&claims.sub, kind)
+            .await?;
+        if kind == ActorKind::Human {
+            // 账户扩展自己的状态（Inactive / Deleted）是附加条件，与 `AuthedUser` 一致。
+            let user = load_user_from_actor(&db, &gate.actor_ref()?).await?;
+            ensure_account_usable(&user)?;
+        }
+
+        let sessions: Vec<Session> = db
+            .query_take0_vec(
+                "session_of_bearer",
+                "SELECT * FROM session WHERE token_hash = $session_token_hash LIMIT 1",
+                json!({ "session_token_hash": crate::utils::crypto::hash_bearer(&token) }),
+            )
+            .await?;
+        let session = sessions.into_iter().next().ok_or(AuthError::InvalidToken)?;
+
+        Ok(AuthedSession {
+            actor: gate.actor,
+            session,
+        })
     }
 }
 

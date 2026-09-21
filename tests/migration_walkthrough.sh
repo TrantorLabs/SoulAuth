@@ -239,6 +239,15 @@ case " $SESSION_FIELDS " in
     *" credential_ref "*) ok "session 表有 credential_ref 列" ;;
     *) bad "session 表有 credential_ref 列" "实际字段: ${SESSION_FIELDS:-（读不到）}" ;;
 esac
+# Unreleased 步骤 1：同一次导入还带来 methods / credential_refs（自省端点读的两列）。
+case " $SESSION_FIELDS " in
+    *" methods "*) ok "session 表有 methods 列" ;;
+    *) bad "session 表有 methods 列" "实际字段: ${SESSION_FIELDS:-（读不到）}" ;;
+esac
+case " $SESSION_FIELDS " in
+    *" credential_refs "*) ok "session 表有 credential_refs 列" ;;
+    *) bad "session 表有 credential_refs 列" "实际字段: ${SESSION_FIELDS:-（读不到）}" ;;
+esac
 
 echo "── 0.3.0 步骤 2：结束升级前建立的 AI actor 会话，人类会话不动 ──"
 # 造 0.2.0 形状的会话：AI actor 的只有 credential_label、没有 credential_ref；

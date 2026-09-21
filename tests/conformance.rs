@@ -2848,12 +2848,15 @@ fn j9_schema_indexes_reference_existing_fields() {
 /// 这条守两个方向的等价关系：
 ///
 /// ```text
-/// 契约声明 bearerAuth  ⟺  handler 签名里有 AuthedUser / AuthedActor
+/// 契约声明 bearerAuth  ⟺  handler 签名里有 AuthedUser / AuthedActor / AuthedSession
 /// 契约声明 x-required-permissions  ⟺  handler 里有 require_permission!
 /// ```
 ///
+/// `AuthedSession` 是第三个 bearer 提取器：人类与 AIActor 令牌都接受，只用于
+/// 「描述持有者自己」的端点（自省）。它同样过身份根闸门，只是不在签名上限定主体类型。
+///
 /// **只管 `bearerAuth`。** 另外两种机制（`oidcAccessToken`、`browserSession`）
-/// 不走这两个提取器，契约用不同的 scheme 声明它们 —— 声明本身就是文档，
+/// 不走这三个提取器，契约用不同的 scheme 声明它们 —— 声明本身就是文档，
 /// 不需要在这里维护一张例外名单（例外名单迟早会变成一张没人敢删的清单）。
 #[test]
 fn j10_contract_auth_matches_runtime() {
@@ -2868,7 +2871,9 @@ fn j10_contract_auth_matches_runtime() {
             continue;
         }
         for (name, sig, block) in fn_blocks(&body) {
-            let needs_token = sig.contains("AuthedUser") || sig.contains("AuthedActor");
+            let needs_token = sig.contains("AuthedUser")
+                || sig.contains("AuthedActor")
+                || sig.contains("AuthedSession");
             let perm = block.split("require_permission").skip(1).find_map(|tail| {
                 let head: String = tail.chars().take(200).collect();
                 permission_consts

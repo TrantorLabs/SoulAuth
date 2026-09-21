@@ -44,6 +44,39 @@ pub struct Session {
     /// 认证事实错置：依赖 `auth_time` 做重认证判断的 RP 会被骗过去。
     #[serde(default)]
     pub authenticated_at: Option<i64>,
+
+    /// 建立这个会话时**成立的全部认证方法**，按认证顺序（`["password", "totp"]`）。
+    ///
+    /// `credential_kind` 只记主方法，是投影；这里是事实本身的方法集合。
+    /// `/api/auth/introspect` 把它原样交给依赖方，依赖方由此知道这个会话是
+    /// 口令建立的还是过了第二因素 —— 而不是只知道「首因素是什么」。
+    ///
+    /// 0.3.0 之前建立的会话没有这一列；读取时按 `credential_kind` 退化成单元素。
+    #[serde(default)]
+    pub methods: Option<Vec<String>>,
+
+    /// 支撑这次认证的**全部**本地凭证的稳定引用。`credential_ref` 是它的首项。
+    /// 外部联合与邮件链接没有本地凭证，为空。
+    #[serde(default)]
+    pub credential_refs: Option<Vec<String>>,
+}
+
+impl Session {
+    /// 建立该会话时成立的方法集合。旧会话（没有 `methods` 列）退化为主方法。
+    pub fn method_names(&self) -> Vec<String> {
+        match &self.methods {
+            Some(m) if !m.is_empty() => m.clone(),
+            _ => self.credential_kind.iter().cloned().collect(),
+        }
+    }
+
+    /// 支撑该会话的本地凭证引用。旧会话退化为 `credential_ref` 单项。
+    pub fn credential_ref_list(&self) -> Vec<String> {
+        match &self.credential_refs {
+            Some(r) => r.clone(),
+            None => self.credential_ref.iter().cloned().collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

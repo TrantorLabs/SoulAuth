@@ -13,8 +13,8 @@
 ## 本地要跑什么
 
 ```bash
-cargo test                                # 199 项单测 + 77 条一致性不变式
-cargo build && ./tests/integration.sh     # 28 组、393 项断言，跑在真实数据库上
+cargo test                                # 200 项单测 + 77 条一致性不变式
+cargo build && ./tests/integration.sh     # 28 组、404 项断言，跑在真实数据库上
 ./tests/deployment_walkthrough.sh         # 从空库执行一遍 DEPLOYMENT.md
 ./tests/migration_walkthrough.sh          # 对上一版形状的库执行一遍 CHANGELOG 的升级步骤
 ```

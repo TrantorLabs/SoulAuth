@@ -270,6 +270,12 @@
       "response": "UserResponse",
       "status_only": false
     },
+    "auth_introspect": {
+      "query": null,
+      "request": null,
+      "response": "IntrospectionResponse",
+      "status_only": false
+    },
     "auth_is_admin_console_user": {
       "query": null,
       "request": null,
@@ -1088,6 +1094,38 @@
       ],
       "type": "object"
     },
+    "AuthenticationFactView": {
+      "properties": {
+        "actor_identity_id": {
+          "type": "string"
+        },
+        "actor_kind": {
+          "type": "string"
+        },
+        "authenticated_at": {
+          "type": "integer"
+        },
+        "credential_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "actor_identity_id",
+        "actor_kind",
+        "methods",
+        "credential_refs"
+      ],
+      "type": "object"
+    },
     "AuthenticationStats": {
       "properties": {
         "failed_logins": {
@@ -1558,6 +1596,21 @@
       },
       "required": [
         "password"
+      ],
+      "type": "object"
+    },
+    "IntrospectionResponse": {
+      "properties": {
+        "authentication": {
+          "$ref": "#/components/schemas/AuthenticationFactView"
+        },
+        "session": {
+          "$ref": "#/components/schemas/SessionView"
+        }
+      },
+      "required": [
+        "authentication",
+        "session"
       ],
       "type": "object"
     },
@@ -2487,6 +2540,25 @@
         "user_agent",
         "ip_address",
         "is_current"
+      ],
+      "type": "object"
+    },
+    "SessionView": {
+      "properties": {
+        "created_at": {
+          "type": "integer"
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "created_at",
+        "expires_at"
       ],
       "type": "object"
     },

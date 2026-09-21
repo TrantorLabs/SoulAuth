@@ -608,6 +608,12 @@ impl AiActorService {
             credential_ref: Some(credential_ref.clone()),
             credential_label: Some(credential.label.clone()),
             authenticated_at: Some(now.timestamp()),
+            methods: Some(vec![
+                crate::models::authentication::AuthenticationMethod::Ed25519Key
+                    .as_str()
+                    .to_string(),
+            ]),
+            credential_refs: Some(vec![credential_ref.clone()]),
         };
         self.db.create_record("session", &session).await?;
 

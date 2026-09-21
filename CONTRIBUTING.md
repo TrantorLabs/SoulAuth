@@ -15,8 +15,8 @@ fixes, documentation and obviously-scoped bug fixes need no issue.
 ## Running the checks
 
 ```bash
-cargo test                                # 199 unit tests + 77 conformance invariants
-cargo build && ./tests/integration.sh     # 28 groups, 393 assertions, real database
+cargo test                                # 200 unit tests + 77 conformance invariants
+cargo build && ./tests/integration.sh     # 28 groups, 404 assertions, real database
 ./tests/deployment_walkthrough.sh         # executes DEPLOYMENT.md from an empty database
 ./tests/migration_walkthrough.sh          # executes the CHANGELOG upgrade steps against a previous-release database
 ```
