@@ -76,11 +76,13 @@ impl AuditService {
 
         let mut active_result = self
             .db
-            .client
-            .query(active_lockouts_query)
-            .bind(("now", Utc::now()))
+            .query_with_unauthorized_retry("audit.active_lockouts", |c| async move {
+                c.query(active_lockouts_query)
+                    .bind(("now", Utc::now()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get active lockouts count: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -97,11 +99,13 @@ impl AuditService {
              WHERE locked_at >= $start_time AND locked_until != NONE";
         let mut duration_result = self
             .db
-            .client
-            .query(duration_query)
-            .bind(("start_time", start_time))
+            .query_with_unauthorized_retry("audit.lockout_durations", |c| async move {
+                c.query(duration_query)
+                    .bind(("start_time", start_time))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get lockout durations: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -160,11 +164,13 @@ impl AuditService {
 
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.failed_login_by_ip", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get failed login by IP: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -179,14 +185,16 @@ impl AuditService {
         let locked_ips: Vec<Value> = {
             let mut r = self
                 .db
-                .client
-                .query(
-                    "SELECT identifier FROM account_lockout \
+                .query_with_unauthorized_retry("audit.locked_ips", |c| async move {
+                    c.query(
+                        "SELECT identifier FROM account_lockout \
                      WHERE lockout_type = 'IpAddress' AND locked_until > $now",
-                )
-                .bind(("now", Utc::now()))
+                    )
+                    .bind(("now", Utc::now()))
+                    .await
+                    .and_then(|response| response.check())
+                })
                 .await
-                .and_then(|response| response.check())
                 .map_err(|e| {
                     error!("Failed to load locked IPs: {}", e);
                     AuthError::DatabaseError("Query execution failed".to_string())
@@ -238,11 +246,13 @@ impl AuditService {
 
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.suspicious_activities", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get suspicious activities: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -287,11 +297,13 @@ impl AuditService {
         let query = "SELECT category, count() as count FROM user_activity WHERE timestamp >= $start_time GROUP BY category ORDER BY count DESC";
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.activities_by_category", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get activities by category: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -326,11 +338,13 @@ impl AuditService {
         let query = "SELECT status, count() as count FROM user_activity WHERE timestamp >= $start_time GROUP BY status ORDER BY count DESC";
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.activities_by_status", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get activities by status: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -367,11 +381,13 @@ impl AuditService {
 
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.top_active_users", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get top active users: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
@@ -423,11 +439,16 @@ impl AuditService {
                               WHERE subject_id != NONE AND type::string(subject_id) IN $actors";
             let mut user_result = self
                 .db
-                .client
-                .query(user_query)
-                .bind(("actors", actor_addresses))
+                .query_with_unauthorized_retry("audit.user_emails", |c| {
+                    let actors = actor_addresses.clone();
+                    async move {
+                        c.query(user_query)
+                            .bind(("actors", actors))
+                            .await
+                            .and_then(|response| response.check())
+                    }
+                })
                 .await
-                .and_then(|response| response.check())
                 .map_err(|e| {
                     error!("Failed to query user emails: {}", e);
                     AuthError::DatabaseError("Query execution failed".to_string())
@@ -490,11 +511,13 @@ impl AuditService {
 
         let mut result = self
             .db
-            .client
-            .query(query)
-            .bind(("start_time", start_time.timestamp()))
+            .query_with_unauthorized_retry("audit.hourly_distribution", |c| async move {
+                c.query(query)
+                    .bind(("start_time", start_time.timestamp()))
+                    .await
+                    .and_then(|response| response.check())
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get hourly activity distribution: {}", e);
                 AuthError::DatabaseError("Query execution failed".to_string())
