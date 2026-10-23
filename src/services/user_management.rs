@@ -88,16 +88,22 @@ impl UserManagementService {
         // 检查用户是否存在
         let mut response = self
             .db
-            .client
-            // `user_thing` 自 Stage 3 起是**身份根**引用，不能拿它去 user 表查 ——
-            // 那必然查不到，于是建资料返回 404。存在性判定改查 actor_identity。
-            // `SELECT VALUE id` 而不是 `SELECT *`：整行里有 record 类型字段，
-            // 用 serde_json::Value 接会报「Expected any, got record」。
-            // 这里只需要判断有没有这一行，取 id 就够。
-            .query("SELECT VALUE id FROM actor_identity WHERE id = $user_id LIMIT 1")
-            .bind(("user_id", user_thing.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q1", |c| {
+                let user_thing = &user_thing;
+                async move {
+                    c
+                        // `user_thing` 自 Stage 3 起是**身份根**引用，不能拿它去 user 表查 ——
+                        // 那必然查不到，于是建资料返回 404。存在性判定改查 actor_identity。
+                        // `SELECT VALUE id` 而不是 `SELECT *`：整行里有 record 类型字段，
+                        // 用 serde_json::Value 接会报「Expected any, got record」。
+                        // 这里只需要判断有没有这一行，取 id 就够。
+                        .query("SELECT VALUE id FROM actor_identity WHERE id = $user_id LIMIT 1")
+                        .bind(("user_id", user_thing.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to check user existence: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -144,11 +150,16 @@ impl UserManagementService {
         let query = "CREATE user_profile CONTENT $profile";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("profile", profile.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q2", |c| {
+                let profile = &profile;
+                async move {
+                    c.query(query)
+                        .bind(("profile", profile.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to create user profile: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -188,11 +199,16 @@ impl UserManagementService {
         let query = "SELECT * FROM user_profile WHERE actor_identity_id = $actor_identity_id";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("actor_identity_id", user_thing.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q3", |c| {
+                let user_thing = &user_thing;
+                async move {
+                    c.query(query)
+                        .bind(("actor_identity_id", user_thing.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get user profile: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -354,11 +370,16 @@ impl UserManagementService {
         let query = "CREATE user_preferences CONTENT $preferences";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("preferences", preferences.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q4", |c| {
+                let preferences = &preferences;
+                async move {
+                    c.query(query)
+                        .bind(("preferences", preferences.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to create user preferences: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -401,11 +422,16 @@ impl UserManagementService {
         let query = "SELECT * FROM user_preferences WHERE user_id = $user_id";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("user_id", user_thing.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q5", |c| {
+                let user_thing = &user_thing;
+                async move {
+                    c.query(query)
+                        .bind(("user_id", user_thing.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get user preferences: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -513,11 +539,16 @@ impl UserManagementService {
         // 检查用户是否存在
         let mut response = self
             .db
-            .client
-            .query("SELECT * FROM user WHERE id = $user_id LIMIT 1")
-            .bind(("user_id", user_thing.clone()))
+            .query_with_unauthorized_retry("user_mgmt.q6", |c| {
+                let user_thing = &user_thing;
+                async move {
+                    c.query("SELECT * FROM user WHERE id = $user_id LIMIT 1")
+                        .bind(("user_id", user_thing.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to check user existence: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -534,13 +565,21 @@ impl UserManagementService {
 
         let now = Utc::now();
 
-        self.db.client
-            .query("UPDATE user SET account_status = $status, updated_at = $updated_at WHERE id = $user_id")
-            .bind(("status", request.status.to_string()))
-            .bind(("updated_at", now.timestamp()))
-            .bind(("user_id", user_thing.clone()))
+        self.db
+            .query_with_unauthorized_retry("user_mgmt.q7", |c| {
+                let request = &request;
+                let user_thing = &user_thing;
+                async move {
+                    c
+                    .query("UPDATE user SET account_status = $status, updated_at = $updated_at WHERE id = $user_id")
+                    .bind(("status", request.status.to_string()))
+                    .bind(("updated_at", now.timestamp()))
+                    .bind(("user_id", user_thing.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to update account status: {}", e);
                 AuthError::DatabaseError(e.to_string())

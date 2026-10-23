@@ -87,11 +87,16 @@ impl RBACService {
         let query = "CREATE role CONTENT $role";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("role", role.clone()))
+            .query_with_unauthorized_retry("rbac.q1", |c| {
+                let role = &role;
+                async move {
+                    c.query(query)
+                        .bind(("role", role.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to create role: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -119,11 +124,15 @@ impl RBACService {
         let query = "SELECT * FROM role WHERE name = $name";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("name", name.to_owned()))
+            .query_with_unauthorized_retry("rbac.q2", |c| {
+                async move {
+                    c.query(query)
+                        .bind(("name", name.to_owned()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get role by name: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -234,11 +243,16 @@ impl RBACService {
             "SELECT count() as count FROM user_role WHERE role_id = $role_id GROUP ALL";
         let mut response = self
             .db
-            .client
-            .query(user_count_query)
-            .bind(("role_id", role_id.clone()))
+            .query_with_unauthorized_retry("rbac.q3", |c| {
+                let role_id = &role_id;
+                async move {
+                    c.query(user_count_query)
+                        .bind(("role_id", role_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to check role usage: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -262,11 +276,16 @@ impl RBACService {
         // 删除角色的权限关联
         let delete_permissions_query = "DELETE FROM role_permission WHERE role_id = $role_id";
         self.db
-            .client
-            .query(delete_permissions_query)
-            .bind(("role_id", role_id.clone()))
+            .query_with_unauthorized_retry("rbac.q4", |c| {
+                let role_id = &role_id;
+                async move {
+                    c.query(delete_permissions_query)
+                        .bind(("role_id", role_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to delete role permissions: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -447,11 +466,16 @@ impl RBACService {
         let query = "CREATE permission CONTENT $permission";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("permission", permission.clone()))
+            .query_with_unauthorized_retry("rbac.q5", |c| {
+                let permission = &permission;
+                async move {
+                    c.query(query)
+                        .bind(("permission", permission.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to create permission: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -482,11 +506,15 @@ impl RBACService {
         let query = "SELECT * FROM permission WHERE name = $name";
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("name", name.to_owned()))
+            .query_with_unauthorized_retry("rbac.q6", |c| {
+                async move {
+                    c.query(query)
+                        .bind(("name", name.to_owned()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get permission by name: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -609,12 +637,18 @@ impl RBACService {
         let check_query = "SELECT * FROM user_role WHERE user_id = $user_id AND role_id = $role_id";
         let mut response = self
             .db
-            .client
-            .query(check_query)
-            .bind(("user_id", user_thing.clone()))
-            .bind(("role_id", role_id.clone()))
+            .query_with_unauthorized_retry("rbac.q7", |c| {
+                let user_thing = &user_thing;
+                let role_id = &role_id;
+                async move {
+                    c.query(check_query)
+                        .bind(("user_id", user_thing.clone()))
+                        .bind(("role_id", role_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to check user role: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -642,11 +676,16 @@ impl RBACService {
         let query = "CREATE user_role CONTENT $user_role";
         let mut create_response = self
             .db
-            .client
-            .query(query)
-            .bind(("user_role", user_role.clone()))
+            .query_with_unauthorized_retry("rbac.q8", |c| {
+                let user_role = &user_role;
+                async move {
+                    c.query(query)
+                        .bind(("user_role", user_role.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to assign role to user: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -689,12 +728,18 @@ impl RBACService {
 
         let delete_query = "DELETE FROM user_role WHERE user_id = $user_id AND role_id = $role_id";
         self.db
-            .client
-            .query(delete_query)
-            .bind(("user_id", user_thing.clone()))
-            .bind(("role_id", role_id.clone()))
+            .query_with_unauthorized_retry("rbac.q9", |c| {
+                let user_thing = &user_thing;
+                let role_id = &role_id;
+                async move {
+                    c.query(delete_query)
+                        .bind(("user_id", user_thing.clone()))
+                        .bind(("role_id", role_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to remove role from user: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -727,11 +772,16 @@ impl RBACService {
 
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("user_key", user_id.clone()))
+            .query_with_unauthorized_retry("rbac.q10", |c| {
+                let user_id = &user_id;
+                async move {
+                    c.query(query)
+                        .bind(("user_key", user_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get user roles: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -773,11 +823,16 @@ impl RBACService {
         let role_query = "SELECT * FROM role WHERE id IN $role_ids";
         let mut role_response = self
             .db
-            .client
-            .query(role_query)
-            .bind(("role_ids", role_ids))
+            .query_with_unauthorized_retry("rbac.q11", |c| {
+                let role_ids = &role_ids;
+                async move {
+                    c.query(role_query)
+                        .bind(("role_ids", role_ids.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get roles: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -832,11 +887,16 @@ impl RBACService {
         let ids_query = "SELECT VALUE permission_id FROM role_permission WHERE role_id = $role_id";
         let mut ids_response = self
             .db
-            .client
-            .query(ids_query)
-            .bind(("role_id", role_id.clone()))
+            .query_with_unauthorized_retry("rbac.q12", |c| {
+                let role_id = &role_id;
+                async move {
+                    c.query(ids_query)
+                        .bind(("role_id", role_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get role permissions: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -855,11 +915,16 @@ impl RBACService {
         let names_query = "SELECT name FROM permission WHERE id IN $permission_ids";
         let mut names_response = self
             .db
-            .client
-            .query(names_query)
-            .bind(("permission_ids", permission_ids))
+            .query_with_unauthorized_retry("rbac.q13", |c| {
+                let permission_ids = &permission_ids;
+                async move {
+                    c.query(names_query)
+                        .bind(("permission_ids", permission_ids.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get role permissions: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -920,12 +985,18 @@ impl RBACService {
         let check_query = "SELECT * FROM role_permission WHERE role_id = $role_id AND permission_id = $permission_id";
         let mut response = self
             .db
-            .client
-            .query(check_query)
-            .bind(("role_id", role_id.clone()))
-            .bind(("permission_id", permission_id.clone()))
+            .query_with_unauthorized_retry("rbac.q14", |c| {
+                let role_id = &role_id;
+                let permission_id = &permission_id;
+                async move {
+                    c.query(check_query)
+                        .bind(("role_id", role_id.clone()))
+                        .bind(("permission_id", permission_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to check role permission: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -953,11 +1024,16 @@ impl RBACService {
         let query = "CREATE role_permission CONTENT $role_permission";
         let mut create_response = self
             .db
-            .client
-            .query(query)
-            .bind(("role_permission", role_permission.clone()))
+            .query_with_unauthorized_retry("rbac.q15", |c| {
+                let role_permission = &role_permission;
+                async move {
+                    c.query(query)
+                        .bind(("role_permission", role_permission.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to assign permission to role: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -1008,12 +1084,18 @@ impl RBACService {
 
         let delete_query = "DELETE FROM role_permission WHERE role_id = $role_id AND permission_id = $permission_id";
         self.db
-            .client
-            .query(delete_query)
-            .bind(("role_id", role_id.clone()))
-            .bind(("permission_id", permission_id.clone()))
+            .query_with_unauthorized_retry("rbac.q16", |c| {
+                let role_id = &role_id;
+                let permission_id = &permission_id;
+                async move {
+                    c.query(delete_query)
+                        .bind(("role_id", role_id.clone()))
+                        .bind(("permission_id", permission_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to remove permission from role: {}", e);
                 AuthError::DatabaseError(e.to_string())
@@ -1141,11 +1223,16 @@ impl RBACService {
 
         let mut response = self
             .db
-            .client
-            .query(query)
-            .bind(("user_key", user_id))
+            .query_with_unauthorized_retry("rbac.q17", |c| {
+                let user_id = &user_id;
+                async move {
+                    c.query(query)
+                        .bind(("user_key", user_id.clone()))
+                        .await
+                        .and_then(|response| response.check())
+                }
+            })
             .await
-            .and_then(|response| response.check())
             .map_err(|e| {
                 error!("Failed to get user permissions: {}", e);
                 AuthError::DatabaseError(e.to_string())
