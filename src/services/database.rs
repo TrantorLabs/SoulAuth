@@ -358,6 +358,46 @@ impl Database {
         }
     }
 
+    /// 对一条直接用 SDK 写的查询做「401 后换新连接重试一次」。
+    ///
+    /// 闭包拿到的是真正的 `Surreal<Client>`，所以调用方原来的 `.bind(...)`
+    /// 原样保留类型（`RecordId`、datetime、模型结构体）。不能改走
+    /// [`Self::raw_query`]：它的绑定是 JSON，`RecordId` 进去会变成普通字符串，
+    /// 身份条件静默失配。
+    ///
+    /// 判 401 必须在闭包返回的**原始** SDK 错误上做：调用方随后会把错误
+    /// 改写成「Query execution failed」，那之后就认不出来了。
+    pub async fn query_with_unauthorized_retry<T, F, Fut>(
+        &self,
+        op_name: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(Surreal<Client>) -> Fut,
+        Fut: std::future::Future<Output = surrealdb::Result<T>>,
+    {
+        let client = if self.should_prefer_fresh() {
+            self.fresh_client().await?
+        } else {
+            self.client.clone()
+        };
+
+        match operation(client).await {
+            Ok(value) => Ok(value),
+            Err(e) if Self::is_unauthorized_error(&e) => {
+                self.mark_prefer_fresh_for(300);
+                warn!("{op_name} failed with 401; retrying once on fresh client");
+                let fresh = self.fresh_client().await?;
+                operation(fresh)
+                    .await
+                    .map_err(|e| AuthError::DatabaseError(format!("Failed to execute query: {e}")))
+            }
+            Err(e) => Err(AuthError::DatabaseError(format!(
+                "Failed to execute query: {e}"
+            ))),
+        }
+    }
+
     pub async fn new(config: &Config) -> Result<Self> {
         let mut retry_count = 0;
         let max_retries = 5;
