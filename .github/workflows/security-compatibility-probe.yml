@@ -19,9 +19,9 @@ jobs:
       - name: Apply only semver-compatible targeted patches
         run: |
           set -euo pipefail
-          cargo update --locked -p ammonia --precise 4.1.9
-          cargo update --locked -p openssl --precise 0.10.81
-          cargo update --locked -p quinn-udp --precise 0.5.16
+          cargo update -p ammonia --precise 4.1.9
+          cargo update -p openssl --precise 0.10.81
+          cargo update -p quinn-udp --precise 0.5.16
           python3 - <<'PY'
           import tomllib, json
           with open("Cargo.lock","rb") as f:
