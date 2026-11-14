@@ -12,5 +12,5 @@
 # 而单独调整；新 lint 由 ci.yml 里那个不阻断的 `lint on latest stable` 步骤负责
 # 提前暴露。
 [toolchain]
-channel = "1.91.1"
+channel = "1.95.0"
 components = ["clippy", "rustfmt"]

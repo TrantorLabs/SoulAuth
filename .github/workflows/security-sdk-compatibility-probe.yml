@@ -11,12 +11,12 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Existing pinned Rust toolchain 1.91.1
+      - name: Existing pinned Rust toolchain 1.95.0
         run: |
-          rustup toolchain install 1.91.1 --profile minimal
-          rustup override set 1.91.1
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup override set 1.95.0
           rustc --version
-      - name: Resolve only HTTP SurrealDB SDK 3.3.0 without embedding DB core
+      - name: Resolve only HTTP SurrealDB SDK 3.3.5 without embedding DB core
         run: |
           set -euo pipefail
           cargo update -p surrealdb --precise 3.3.5
@@ -38,8 +38,10 @@ jobs:
           cargo tree --locked --edges normal -i crypto-bigint > crypto-bigint-tree.txt 2>&1 || true
           head -n 65 surrealdb-core-tree.txt
           head -n 65 crypto-bigint-tree.txt
-      - name: Check entire existing SoulAuth source against remote-only SDK
-        run: cargo check --locked
+      - name: Check entire existing SoulAuth source against split HTTP/WS SDK
+        run: |
+          cargo check --locked
+          cargo test --locked --test conformance -- --test-threads=1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
