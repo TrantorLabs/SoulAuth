@@ -54,6 +54,38 @@ unsafe" when it means "the tool is out of date". That case fails the job with a 
 naming the cause and the fix — bump the pinned `cargo-audit` version — so nobody reads a
 format change as a security regression.
 
+## November 2026 security dependency remediation
+
+The public v0.4.0 application retains its release history and server database
+format. The next development baseline updates the **remote Rust SDK** and
+directly compatible dependency versions; it does not upgrade the SurrealDB
+server datastore or relabel any historical release.
+
+The reproducible compatibility experiment ran Rust 1.95.0, a real Cargo
+build, 77 conformance tests and the *unchanged* seven-item `cargo audit`
+exception policy: [GitHub Actions evidence](https://github.com/TrantorLabs/SoulAuth/actions/runs/43576621311).
+This is necessary but not sufficient for deployment: the merged change also
+requires full unit, live SurrealDB 3.2.4, migration and Docker CI before
+acceptance.
+
+| Previous locked dependency | Research assessment and action |
+|---|---|
+| `openssl 0.10.72` (eight recent advisories) | Native TLS is reachable in real network connections. Updated to `0.10.81` within the same 0.10 line; not ignored. |
+| `quinn-udp 0.5.14` (RUSTSEC-2026-0538) | SoulAuth's HTTP-based identity/database paths do not themselves use QUIC UDP, but the old version is still undesirable in a resolved lock. Updated to `0.5.16` without an ignore. |
+| `ammonia 4.1.8` (RUSTSEC-2026-0533) | Formerly pulled in by the embedded SurrealDB engine; no application feature intentionally invokes its HTML sanitization routines. The updated remote SDK dependency tree eliminates this crate. |
+| `crypto-bigint 0.5.5` (RUSTSEC-2026-0387) | A side-channel concern for secret arithmetic. It was included transitively via the old database-core dependency graph. No longer present in the new lockfile; no unsupported direct upgrade was attempted. |
+| `surrealdb 3.0.0` (RUSTSEC-2026-0453) | Old embedded KV engine paths are not a required part of SoulAuth's remote database client. Moved to split-engine `surrealdb 3.3.5`. |
+| `surrealdb-core 3.0.0` (RUSTSEC-2026-0454) | The old embedded query engine carried a distinct unsafe `Send/Sync` data-race risk, fixed in the server core at 4.x. The application now depends on the **remote SDK without that engine crate**, so `surrealdb-core` is absent from `Cargo.lock`. |
+
+The SDK 3.3.5 transition preserves the remote HTTP/WS feature selection
+and requires **Rust 1.95.0** for its current dependency code. It is a client
+upgrade, not a claim that the running database has been migrated from
+SurrealDB 3.2.4 to server 4.x. The old security-advisory exceptions below
+remain subject to their original documented reachability analysis; no new
+`--ignore` entries were introduced. The current audit also reports
+nonfatal unmaintained/yanked warnings, which are tracked separately and
+must not be presented as a blanket statement of zero dependency risk.
+
 ## Known limitations
 
 - **The database login is namespace- or database-scoped in production, and the
