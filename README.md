@@ -1,5 +1,52 @@
 # SoulAuth
 
+## Get started — local demo, source tests, production
+
+**Fastest local demo: Docker Compose** (Docker Engine + Compose plugin,
+OpenSSL and curl; no Rust or database installation needed on your machine).
+On a fresh checkout, from the directory containing `docker-compose.yml`:
+
+```bash
+cp .env.example .env
+sed -i "s/^JWT_SECRET=$/JWT_SECRET=$(openssl rand -hex 32)/" .env
+docker compose up -d --build
+curl --retry 20 --retry-delay 3 --retry-connrefused -fsS http://localhost:8080/health
+docker compose logs --no-color soulauth | grep 'Bootstrap token for this process'
+```
+
+Copy the **real one-time token** shown in that log; then follow
+[First administrator and login](#quick-start) to create your own account.
+The `7f3a…` token shown later is illustrative, not a valid token.
+`docker compose down` stops this demo while preserving its database;
+`docker compose down -v` **deletes** the local database volume.
+Never expose this development Compose setup to the public internet.
+
+**Build or validate from source:** Ubuntu 22.04/24.04, Bash, Rust/Cargo
+**1.91.1** (see `rust-toolchain.toml`), SurrealDB **3.2.4**, Python 3,
+OpenSSL and curl. Install Rust from [rustup.rs](https://rustup.rs/), then:
+
+```bash
+rustup toolchain install 1.91.1 --profile minimal --component rustfmt --component clippy
+rustc --version                   # must report 1.91.1
+cargo test --locked               # Rust tests
+```
+
+For database-backed behavior, install and verify SurrealDB **3.2.4** using
+[the official CLI installer](https://surrealdb.com/docs/explore/cli/install)
+and follow [standalone deployment](DEPLOYMENT.md) for schema import and
+bootstrap; `tests/integration.sh` and `tests/migration_walkthrough.sh`
+provide the live integration and migration checks. **Do not confuse unit
+tests with a complete live database validation.**
+
+**Production:** use [DEPLOYMENT.md](DEPLOYMENT.md), its
+[Chinese translation](DEPLOYMENT.zh-CN.md), and the
+[operations documentation](https://soulauth.trantorlabs.sg/). Production
+needs persistent signing/MFA/audit keys, a unique instance ID and secure
+database/TLS configuration. Keep the existing research architecture and
+API references below.
+
+---
+
 **Actor-native identity infrastructure for Human and AIActor subjects.**
 
 SoulAuth is open-source identity and authentication infrastructure built by

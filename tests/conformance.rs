@@ -3574,13 +3574,31 @@ fn j17_env_example_matches_the_config_contract() {
         .collect();
 
     let example = read(".env.example");
+    // Explicitly assigning the bootstrap key to an empty string *disables*
+    // first-admin setup. Keep it documented, but commented out by default.
+    assert!(
+        example.lines().any(|l| l.trim() == "# SOULAUTH_BOOTSTRAP_TOKEN="),
+        "Bootstrap token must be documented as an inactive example"
+    );
+    assert!(
+        !example
+            .lines()
+            .any(|l| l.trim_start().starts_with("SOULAUTH_BOOTSTRAP_TOKEN=")),
+        "A blank active bootstrap setting disables the first administrator"
+    );
     let mut in_example: Vec<String> = example
         .lines()
         .filter_map(|l| {
-            let key = l.split('=').next()?;
+            let line = l.trim();
+            let entry = if line == "# SOULAUTH_BOOTSTRAP_TOKEN=" {
+                line.trim_start_matches("# ")
+            } else {
+                line
+            };
+            let key = entry.split('=').next()?;
             (!key.is_empty()
                 && key.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-                && l.contains('='))
+                && entry.contains('='))
             .then(|| key.to_string())
         })
         .collect();

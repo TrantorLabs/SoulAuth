@@ -19,7 +19,17 @@
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; SP=8123; AP=8203
 export no_proxy="localhost,127.0.0.1" NO_PROXY="localhost,127.0.0.1"
 WORK="$(mktemp -d)"; FAIL=0
-cleanup(){ kill -9 ${AP_PID:-0} ${DB_PID:-0} 2>/dev/null; rm -rf "$WORK"; }; trap cleanup EXIT
+cleanup() {
+  # Never signal process group 0 if an early startup error left a PID unset.
+  for pid in "${AP_PID:-}" "${DB_PID:-}"; do
+    if [ -n "$pid" ]; then kill -9 "$pid" 2>/dev/null || :; fi
+  done
+  if [ -n "${KEEP_WORK:-}" ]; then
+    printf 'Deployment test logs kept at %s\n' "$WORK"
+  else
+    rm -rf "$WORK"
+  fi
+}; trap cleanup EXIT
 step(){ printf '\n\033[1m[步骤 %s]\033[0m %s\n' "$1" "$2"; }
 bad(){ FAIL=$((FAIL+1)); printf '  \033[31m✗ %s\033[0m\n' "$1"; }
 ok(){ printf '  \033[32m✓ %s\033[0m\n' "$1"; }
@@ -113,3 +123,4 @@ if [ -z "$TOK" ]; then bad "登录拿不到令牌"; else
 fi
 
 printf '\n\033[1m照修订后文档执行的失败步骤数: %s\033[0m\n' "$FAIL"
+[ "$FAIL" -eq 0 ]

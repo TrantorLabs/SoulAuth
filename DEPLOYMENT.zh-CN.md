@@ -50,15 +50,16 @@ https** —— 明文会让会话 cookie 掉 `Secure`、邮件里的链接走明
 违反 Discovery 规范，按规范校验的接入方会直接拒绝。TLS 请在 SoulAuth 前面终结，
 这里填对外那个 https 地址。
 
-在此之上，下面三项缺任一**直接拒绝启动**：
+在此之上，下面**四项**缺任一都应拒绝生产启动：
 
 ```env
 OIDC_RSA_PRIVATE_KEY_PATH=/etc/soulauth/oidc-signing.pem   # 或 _PEM 直接给内容
 MFA_SECRET_ENCRYPTION_KEY=<openssl rand -base64 32>
 AUDIT_INTEGRITY_KEY=<openssl rand -base64 32>
+SOULAUTH_INSTANCE_ID=<unique-instance-id>
 ```
 
-为什么是拒绝启动而不是警告：**这三项的后果都不在启动时显现**。
+为什么拒绝启动而非仅警告：这些问题有的在重启、切换副本或事故时才会暴露。
 
 - 缺签名私钥 → 每次启动临时生成一把，**进程一重启，已签发的 ID Token 全部
   无法验签**；多副本部署里各副本各签各的，从第一天起就互不认账，
@@ -78,7 +79,7 @@ AUDIT_INTEGRITY_KEY=<openssl rand -base64 32>
 #### 数据库
 
 ```env
-DATABASE_URL=127.0.0.1:8000        # 默认 http://localhost:8000；写 https:// 即走 TLS
+DATABASE_URL=http://127.0.0.1:8000        # 默认 http://localhost:8000；写 https:// 即走 TLS
 DATABASE_USER=root
 DATABASE_PASS=root
 DATABASE_NAMESPACE=auth            # 默认 auth
@@ -222,16 +223,21 @@ PROXY_URL=
 
 ## 部署步骤
 
-1. **启动 SurrealDB** 并确认可达：
+1. **启动 SurrealDB** 并确认可达。全新本地数据库首次生成密码并安全保存，重启同一数据库时必须复用原密码：
    ```bash
+   export DB_PASS="${DB_PASS:-$(openssl rand -hex 24)}"
+   mkdir -p "$HOME/.local/share/soulauth"
    surreal start --bind 127.0.0.1:8000 --user root --pass "$DB_PASS" \
-     surrealkv:///var/lib/surrealdb/soulauth.db
-   curl -f http://127.0.0.1:8000/health && echo " SurrealDB OK"
+     "surrealkv://$HOME/.local/share/soulauth/soulauth.db" \
+     > "$HOME/.local/share/soulauth/surreal.log" 2>&1 &
+   curl --retry 10 --retry-connrefused --retry-delay 1 -f \
+     http://127.0.0.1:8000/health && echo " SurrealDB OK"
    ```
+   这里只演示环回地址和本地 root 账户；远程生产数据库必须正确设置 TLS 和限权账户。
 
-2. **准备环境变量**。四项必填，生产环境再加两项（见上面「环境变量」）：
+2. **准备环境变量**。基础四项及生产所需四项均须配置，以下域名和 SMTP 需要替换为实际值：
    ```bash
-   export DATABASE_URL=127.0.0.1:8000
+   export DATABASE_URL=http://127.0.0.1:8000
    export DATABASE_NAMESPACE=auth      # 下一步导入时必须用同一个值
    export DATABASE_NAME=main           # 同上
    export DATABASE_USER=root
@@ -240,18 +246,27 @@ PROXY_URL=
    export APP_URL=https://auth.example.com
    export SMTP_HOST=smtp.example.com
    export SMTP_FROM=noreply@example.com
-   export OIDC_RSA_PRIVATE_KEY_PATH=/etc/soulauth/oidc-signing.pem
+   # Keep the signing key outside the Git checkout and persist all keys.
+   install -d -m 700 "$HOME/.config/soulauth"
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+     -out "$HOME/.config/soulauth/oidc-signing.pem"
+   chmod 600 "$HOME/.config/soulauth/oidc-signing.pem"
+   export OIDC_RSA_PRIVATE_KEY_PATH="$HOME/.config/soulauth/oidc-signing.pem"
    export MFA_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+   export AUDIT_INTEGRITY_KEY=$(openssl rand -base64 32)
+   export SOULAUTH_INSTANCE_ID=soulauth-node-1
+   # Save all generated keys securely; reuse across restarts and use a unique
+   # SOULAUTH_INSTANCE_ID for each replica.
    ```
 
 3. **准备数据库**。注意这里直接复用上一步导出的变量，
    保证导入目标与应用启动后连接的是同一个 ns/db：
    ```bash
-   surreal import --endpoint "http://$DATABASE_URL" \
+   surreal import --endpoint "$DATABASE_URL" \
        --user "$DATABASE_USER" --pass "$DATABASE_PASS" \
        --namespace "$DATABASE_NAMESPACE" --database "$DATABASE_NAME" schema.sql
 
-   surreal import --endpoint "http://$DATABASE_URL" \
+   surreal import --endpoint "$DATABASE_URL" \
        --user "$DATABASE_USER" --pass "$DATABASE_PASS" \
        --namespace "$DATABASE_NAMESPACE" --database "$DATABASE_NAME" initial_data.sql
    ```
