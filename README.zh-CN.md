@@ -1,5 +1,54 @@
 # SoulAuth
 
+## 快速体验｜本地 Docker、源码测试与生产部署
+
+**最快的本地体验方式是 Docker Compose**：宿主机只需 Docker Engine、
+Compose 插件、OpenSSL 和 curl，无须手动安装 Rust 或数据库。
+在包含 `docker-compose.yml` 的新检出仓库根目录运行：
+
+```bash
+cp .env.example .env
+sed -i "s/^JWT_SECRET=$/JWT_SECRET=$(openssl rand -hex 32)/" .env
+docker compose up -d --build
+curl --retry 20 --retry-delay 3 --retry-connrefused -fsS http://localhost:8080/health
+docker compose logs --no-color soulauth | grep 'Bootstrap token for this process'
+```
+
+从日志复制**真实的一次性初始化令牌**，然后按照
+[建立管理员并登录](#快速开始)的步骤操作。
+下面示意的 `7f3a…` 并不是真实令牌。
+`docker compose down` 仅停止服务并保留数据库；
+`docker compose down -v` 会**删除**本地数据库卷。
+这套开发默认设置不可直接暴露到公网。
+
+**源码构建与测试环境：** Ubuntu 22.04/24.04、Bash、
+Rust/Cargo **1.95.0**（见 `rust-toolchain.toml`）、
+SurrealDB Server **3.2.4**（已与 Rust SDK **3.3.5** 验证兼容）、
+Python 3、OpenSSL 和 curl。
+按 [rustup 官方说明](https://rustup.rs/)安装 Rust 后执行：
+
+```bash
+rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+rustc --version                   # 应为 1.95.0
+cargo test --locked               # Rust 测试
+```
+
+真实数据库集成验证还需要按
+[SurrealDB 官方 CLI 安装说明](https://surrealdb.com/docs/explore/cli/install)
+安装并核实 **3.2.4**，再参考
+[生产/独立部署指南](DEPLOYMENT.zh-CN.md)完成数据库导入与首次初始化。
+`tests/integration.sh`、`tests/migration_walkthrough.sh`
+覆盖实际服务集成和迁移，不可用单元测试通过代替。
+
+**正式部署：** 请使用 [中文部署指南](DEPLOYMENT.zh-CN.md)、
+[英文主版](DEPLOYMENT.md)及
+[运维文档站](https://soulauth.trantorlabs.sg/)。
+生产环境必须持久化签名/MFA/审计密钥、设置独立实例 ID，
+并正确配置 TLS 和数据库权限。下文原有理论、架构图、API
+及双语研究说明全部保留。
+
+---
+
 **面向 Human 与 AIActor 的 Actor-native 身份基础设施。**
 
 SoulAuth 是由**新加坡 TRANTOR LABS** 构建的开源身份与认证基础设施。它使用 Rust

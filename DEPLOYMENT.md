@@ -54,16 +54,17 @@ links unencrypted, and produces an OIDC `issuer` that violates the Discovery spe
 conforming relying parties reject. Terminate TLS in front of SoulAuth and put the public
 https address here.
 
-On top of that, missing any of these three is a **hard startup failure**:
+On top of that, missing any of these **four** is a hard production startup failure:
 
 ```env
 OIDC_RSA_PRIVATE_KEY_PATH=/etc/soulauth/oidc-signing.pem   # or _PEM for the contents
 MFA_SECRET_ENCRYPTION_KEY=<openssl rand -base64 32>
 AUDIT_INTEGRITY_KEY=<openssl rand -base64 32>
+SOULAUTH_INSTANCE_ID=<unique-instance-id>
 ```
 
-Why refuse to start rather than warn: **none of the three consequences shows up at
-startup.**
+Why refuse to start rather than warn: these failures may only become visible
+at restart, across replicas or during an incident.
 
 - No signing key → one is generated per process, so **every ID token already issued
   stops verifying the moment you restart**. Across replicas each one signs with its own
@@ -84,7 +85,7 @@ allowed through — otherwise people route around the gate with an environment v
 #### Database
 
 ```env
-DATABASE_URL=127.0.0.1:8000        # default http://localhost:8000; https:// switches to TLS
+DATABASE_URL=http://127.0.0.1:8000        # default http://localhost:8000; https:// switches to TLS
 DATABASE_USER=root
 DATABASE_PASS=root
 DATABASE_NAMESPACE=auth            # default auth
@@ -241,17 +242,25 @@ revocation is instant, at the cost of two extra queries per request.
 
 ## Deployment steps
 
-1. **Start SurrealDB** and confirm it answers:
+1. **Start SurrealDB** on local loopback. For a new database generate and
+   securely retain a password; reuse that password on later restarts:
    ```bash
+   export DB_PASS="${DB_PASS:-$(openssl rand -hex 24)}"
+   mkdir -p "$HOME/.local/share/soulauth"
    surreal start --bind 127.0.0.1:8000 --user root --pass "$DB_PASS" \
-     surrealkv:///var/lib/surrealdb/soulauth.db
-   curl -f http://127.0.0.1:8000/health && echo " SurrealDB OK"
+     "surrealkv://$HOME/.local/share/soulauth/soulauth.db" \
+     > "$HOME/.local/share/soulauth/surreal.log" 2>&1 &
+   curl --retry 10 --retry-connrefused --retry-delay 1 -f \
+     http://127.0.0.1:8000/health && echo " SurrealDB OK"
    ```
+   This example uses local root credentials. Remote production databases
+   require appropriate TLS and narrowly scoped credentials.
 
-2. **Set the environment.** Four required, plus two more in production (see
-   "Environment variables" above):
+2. **Set the environment.** Provide the four base variables plus the four
+   additional production settings; replace the example public hostname and
+   SMTP host with real values:
    ```bash
-   export DATABASE_URL=127.0.0.1:8000
+   export DATABASE_URL=http://127.0.0.1:8000
    export DATABASE_NAMESPACE=auth      # the import in the next step must use this value
    export DATABASE_NAME=main           # and this one
    export DATABASE_USER=root
@@ -260,18 +269,27 @@ revocation is instant, at the cost of two extra queries per request.
    export APP_URL=https://auth.example.com
    export SMTP_HOST=smtp.example.com
    export SMTP_FROM=noreply@example.com
-   export OIDC_RSA_PRIVATE_KEY_PATH=/etc/soulauth/oidc-signing.pem
+   # Keep the signing key outside the Git checkout and persist all keys.
+   install -d -m 700 "$HOME/.config/soulauth"
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+     -out "$HOME/.config/soulauth/oidc-signing.pem"
+   chmod 600 "$HOME/.config/soulauth/oidc-signing.pem"
+   export OIDC_RSA_PRIVATE_KEY_PATH="$HOME/.config/soulauth/oidc-signing.pem"
    export MFA_SECRET_ENCRYPTION_KEY=$(openssl rand -base64 32)
+   export AUDIT_INTEGRITY_KEY=$(openssl rand -base64 32)
+   export SOULAUTH_INSTANCE_ID=soulauth-node-1
+   # Save all generated keys securely; reuse across restarts and use a unique
+   # SOULAUTH_INSTANCE_ID for each replica.
    ```
 
 3. **Prepare the database.** This reuses the variables exported above on purpose, so the
    import target and the pair the process connects to cannot drift apart:
    ```bash
-   surreal import --endpoint "http://$DATABASE_URL" \
+   surreal import --endpoint "$DATABASE_URL" \
        --user "$DATABASE_USER" --pass "$DATABASE_PASS" \
        --namespace "$DATABASE_NAMESPACE" --database "$DATABASE_NAME" schema.sql
 
-   surreal import --endpoint "http://$DATABASE_URL" \
+   surreal import --endpoint "$DATABASE_URL" \
        --user "$DATABASE_USER" --pass "$DATABASE_PASS" \
        --namespace "$DATABASE_NAMESPACE" --database "$DATABASE_NAME" initial_data.sql
    ```
