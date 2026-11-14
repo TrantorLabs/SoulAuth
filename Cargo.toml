@@ -22,8 +22,8 @@ tokio = { version = "1.28", features = ["full"] }
 # 数据库
 reqwest = { version = "0.13", features = ["json"] }
 base64 = "0.21"
-surrealdb = { version = "3.3.5", features = ["protocol-http"] }
-surrealdb-types = "3.3.5"
+surrealdb = { version = "4.0.1", features = ["protocol-http"] }
+surrealdb-types = "4.0.1"
 
 # 认证相关
 jsonwebtoken = "8.3"

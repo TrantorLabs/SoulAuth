@@ -1,0 +1,59 @@
+name: SoulAuth isolated SurrealDB 4.0.1 SDK migration probe
+on:
+  push:
+    branches: [spike/surrealdb4-sdk-compatibility-20261114]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sdk4-against-server3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep existing Rust 1.95.0
+        run: |
+          rustup show
+          rustc --version
+      - name: Resolve pinned SurrealDB SDK 4.0.1 and types
+        run: |
+          set -euo pipefail
+          cargo update -p surrealdb --precise 4.0.1
+          cargo update -p surrealdb-types --precise 4.0.1
+          python3 - <<'PY'
+          import tomllib,json
+          with open("Cargo.lock","rb") as f: packages=tomllib.load(f)["package"]
+          out={n:[x["version"] for x in packages if x["name"]==n]
+               for n in ["surrealdb","surrealdb-types","surrealdb-core","openssl"]}
+          print(json.dumps(out,indent=2))
+          assert out["surrealdb"]==["4.0.1"],out
+          assert out["surrealdb-types"]==["4.0.1"],out
+          open("sdk4-probe-lock.json","w").write(json.dumps(out,indent=2)+"\n")
+          PY
+      - name: Compile untouched identity implementation against SDK 4.0.1
+        run: cargo check --locked
+      - name: Test 77 source invariants against SDK 4.0.1
+        run: cargo test --locked --test conformance -- --test-threads=1
+      - name: Install isolated SurrealDB 3.2.4 server for API compatibility
+        env:
+          SURREAL_VERSION: v3.2.4
+        run: |
+          curl -sSf https://install.surrealdb.com | sh -s -- --version "$SURREAL_VERSION"
+          echo "$HOME/.surrealdb" >> "$GITHUB_PATH"
+      - name: Run real server 3.2.4 integration + migration with SDK 4.0.1
+        run: |
+          set -euo pipefail
+          surreal version
+          cargo build --locked
+          ./tests/integration.sh
+          ./tests/deployment_walkthrough.sh
+          ./tests/migration_walkthrough.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soulauth-surrealdb4-sdk-compatibility-evidence
+          path: |
+            Cargo.toml
+            Cargo.lock
+            sdk4-probe-lock.json
+          if-no-files-found: warn
