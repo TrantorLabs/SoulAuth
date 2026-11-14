@@ -1,0 +1,56 @@
+name: SoulAuth security compatibility patch probe
+on:
+  push:
+    branches: [security/cargo-patch-probe-20261114]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  resolve-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin existing Rust
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal --component clippy --component rustfmt
+          rustup override set 1.91.1
+          rustc --version
+      - name: Apply only semver-compatible targeted patches
+        run: |
+          set -euo pipefail
+          cargo update --locked -p ammonia --precise 4.1.9
+          cargo update --locked -p openssl --precise 0.10.81
+          cargo update --locked -p quinn-udp --precise 0.5.16
+          python3 - <<'PY'
+          import tomllib, json
+          with open("Cargo.lock","rb") as f:
+              packages=tomllib.load(f)["package"]
+          wanted=["ammonia","openssl","quinn-udp","crypto-bigint","surrealdb","surrealdb-core","surrealdb-types"]
+          have={name:[p["version"] for p in packages if p["name"]==name] for name in wanted}
+          assert have["ammonia"]==["4.1.9"], have
+          assert have["openssl"]==["0.10.81"], have
+          assert have["quinn-udp"]==["0.5.16"], have
+          assert have["surrealdb"]==["3.0.0"] and have["surrealdb-core"]==["3.0.0"], have
+          print(json.dumps(have,indent=2))
+          open("security-patch-versions.json","w").write(json.dumps(have,indent=2)+"\n")
+          PY
+      - name: Inspect source of hard blockers
+        run: |
+          cargo tree --locked --edges normal -i crypto-bigint > crypto-bigint-tree.txt || true
+          cargo tree --locked --edges normal -i surrealdb-core > surrealdb-core-tree.txt || true
+          sed -n '1,50p' crypto-bigint-tree.txt
+          sed -n '1,50p' surrealdb-core-tree.txt
+      - name: Verify patched lockfile compiles under pinned Rust
+        run: cargo check --locked
+      - name: Preserve exact generated lock and diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soulauth-security-compatibility-probe
+          path: |
+            Cargo.lock
+            security-patch-versions.json
+            crypto-bigint-tree.txt
+            surrealdb-core-tree.txt
+          if-no-files-found: warn
