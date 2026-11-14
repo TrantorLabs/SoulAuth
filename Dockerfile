@@ -5,7 +5,7 @@
 # 分两段：编译产物有 ~1.5GB 的工具链和中间物，运行时一个都不需要。
 
 # ── 构建 ─────────────────────────────────────────────────────────────
-FROM rust:1.91.1-bookworm AS builder
+FROM rust:1.95.0-bookworm AS builder
 
 # oauth2 与 lettre 都启用了 native-tls，因此编译期需要 OpenSSL 开发头文件。
 # 换成 rustls 可以省掉这一层，但那是依赖选型变更，不在容器化范围内。

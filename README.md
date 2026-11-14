@@ -22,12 +22,13 @@ The `7f3a…` token shown later is illustrative, not a valid token.
 Never expose this development Compose setup to the public internet.
 
 **Build or validate from source:** Ubuntu 22.04/24.04, Bash, Rust/Cargo
-**1.91.1** (see `rust-toolchain.toml`), SurrealDB **3.2.4**, Python 3,
+**1.95.0** (see `rust-toolchain.toml`), SurrealDB Server **3.2.4**
+(verified against the SurrealDB Rust SDK **3.3.5**), Python 3,
 OpenSSL and curl. Install Rust from [rustup.rs](https://rustup.rs/), then:
 
 ```bash
-rustup toolchain install 1.91.1 --profile minimal --component rustfmt --component clippy
-rustc --version                   # must report 1.91.1
+rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+rustc --version                   # must report 1.95.0
 cargo test --locked               # Rust tests
 ```
 

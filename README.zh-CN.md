@@ -22,13 +22,14 @@ docker compose logs --no-color soulauth | grep 'Bootstrap token for this process
 这套开发默认设置不可直接暴露到公网。
 
 **源码构建与测试环境：** Ubuntu 22.04/24.04、Bash、
-Rust/Cargo **1.91.1**（见 `rust-toolchain.toml`）、
-SurrealDB **3.2.4**、Python 3、OpenSSL 和 curl。
+Rust/Cargo **1.95.0**（见 `rust-toolchain.toml`）、
+SurrealDB Server **3.2.4**（已与 Rust SDK **3.3.5** 验证兼容）、
+Python 3、OpenSSL 和 curl。
 按 [rustup 官方说明](https://rustup.rs/)安装 Rust 后执行：
 
 ```bash
-rustup toolchain install 1.91.1 --profile minimal --component rustfmt --component clippy
-rustc --version                   # 应为 1.91.1
+rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+rustc --version                   # 应为 1.95.0
 cargo test --locked               # Rust 测试
 ```
 
