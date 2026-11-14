@@ -4,7 +4,7 @@ on:
     branches: [security/cargo-patch-probe-20261114]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   resolve-lock:
     runs-on: ubuntu-24.04
@@ -54,3 +54,15 @@ jobs:
             crypto-bigint-tree.txt
             surrealdb-core-tree.txt
           if-no-files-found: warn
+      - name: Commit only tested Cargo.lock to this isolated security branch
+        if: success()
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "security/cargo-patch-probe-20261114"
+          test -f security-patch-versions.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git diff --cached --quiet && { echo "Cargo.lock already up to date"; exit 0; }
+          git commit -m "fix(deps): update ammonia openssl and quinn-udp within existing major lines"
+          git push origin HEAD:refs/heads/security/cargo-patch-probe-20261114
