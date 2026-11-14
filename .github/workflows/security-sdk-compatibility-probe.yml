@@ -19,8 +19,8 @@ jobs:
       - name: Resolve only HTTP SurrealDB SDK 3.3.0 without embedding DB core
         run: |
           set -euo pipefail
-          cargo update -p surrealdb --precise 3.3.0
-          cargo update -p surrealdb-types --precise 3.3.0
+          cargo update -p surrealdb --precise 3.3.5
+          cargo update -p surrealdb-types --precise 3.3.5
           cargo update -p openssl --precise 0.10.81
           cargo update -p ammonia --precise 4.1.9 || echo "NOTE: ammonia may no longer be linked in remote-only SDK"
           cargo update -p quinn-udp --precise 0.5.16 || echo "NOTE: quinn-udp may no longer be linked in remote-only SDK"
